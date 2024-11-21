@@ -4,24 +4,30 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::de::Visitor;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use blockp_core::blockchain::Transaction;
 use blockp_core::crypto::Hash;
 use blockp_core::crypto::HASH_SIZE;
 use blockp_core::encoding::serialize::FromHex;
 
-use crate::data::attachment::Sign;
+use crate::data::attachment::{
+    Attachment, AttachmentMetadata, AttachmentMetadataWithHash, AttachmentType, DocumentId, Sign,
+};
 use crate::data::classifier::Classifier;
 use crate::data::conditions::{
     CheckResult, Conditions, ContractType, ExtraCondition, ObjectOwnership, TerminationCondition,
 };
+use crate::data::contract::{ContractId, RequestConfirm};
 use crate::data::cost::Cost;
 use crate::data::location::Location;
-use crate::data::lot::{verify_lot_desc, verify_lot_name, Lot, LotId, LotStatus, SaleType};
+use crate::data::lot::{Lot, LotId, LotStatus, SaleType};
+#[cfg(feature = "internal_api")]
+use crate::data::member::MemberEsiaToken;
 use crate::data::member::MemberIdentity;
 use crate::data::object::ObjectIdentity;
-use crate::data::ownership::{Distribution, Ownership, OwnershipUnstructured};
+use crate::data::ownership::{Distribution, Ownership, OwnershipUnstructured, Rights};
+use crate::data::payment::{Calculation, PaymentDetail, PaymentStatus};
 use crate::data::time::{Duration, Specification, Term};
 use crate::error::{Error, Result};
 
@@ -31,118 +37,269 @@ pub struct TxList(pub Vec<String>);
 
 pub type Lots = Vec<LotId>;
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(transparent)]
-pub struct MemberInfo(#[serde(with = "serde_with::rust::display_fromstr")] pub MemberIdentity);
+#[derive(Debug, Serialize, Eq, PartialEq, Clone)]
+pub struct MemberInfo {
+    class: u8,
+    number: String,
+}
+
+impl<'de> Deserialize<'de> for MemberInfo {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct UncheckedMemberInfo {
+            class: u8,
+            number: String,
+        }
+
+        impl UncheckedMemberInfo {
+            fn is_valid(self) -> Result<MemberInfo> {
+                let tmp = MemberInfo {
+                    class: self.class,
+                    number: self.number,
+                };
+                let mem_iden = MemberIdentity::from(tmp.clone());
+                if mem_iden.is_valid() {
+                    Ok(tmp)
+                } else {
+                    Error::bad_member_format(&mem_iden.to_string()).ok()
+                }
+            }
+        }
+
+        UncheckedMemberInfo::deserialize(deserializer)?
+            .is_valid()
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl From<MemberInfo> for MemberIdentity {
-    fn from(member: MemberInfo) -> MemberIdentity {
-        member.0
+    fn from(v: MemberInfo) -> MemberIdentity {
+        MemberIdentity::new(v.class, &v.number)
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(transparent)]
-pub struct ObjectInfo(#[serde(with = "serde_with::rust::display_fromstr")] pub ObjectIdentity);
-
-impl From<ObjectInfo> for ObjectIdentity {
-    fn from(object: ObjectInfo) -> ObjectIdentity {
-        object.0
+impl From<MemberIdentity> for MemberInfo {
+    fn from(v: MemberIdentity) -> MemberInfo {
+        MemberInfo {
+            class: v.class(),
+            number: v.number().to_string(),
+        }
     }
 }
 
-impl From<ObjectIdentity> for ObjectInfo {
-    fn from(object: ObjectIdentity) -> ObjectInfo {
-        Self(object)
+#[derive(Debug, Serialize, Eq, PartialEq, Clone)]
+pub struct ObjectIdentityDto {
+    class: u8,
+    reg_number: String,
+}
+
+impl<'de> Deserialize<'de> for ObjectIdentityDto {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct UncheckedObjectIdentityDto {
+            class: u8,
+            reg_number: String,
+        }
+
+        impl UncheckedObjectIdentityDto {
+            fn is_valid(self) -> Result<ObjectIdentityDto> {
+                let tmp = ObjectIdentityDto {
+                    class: self.class,
+                    reg_number: self.reg_number,
+                };
+                let mem_iden = ObjectIdentity::from(tmp.clone());
+                if mem_iden.is_valid() {
+                    Ok(tmp)
+                } else {
+                    Error::bad_object_format(&mem_iden.to_string(), "invalid number").ok()
+                }
+            }
+        }
+
+        UncheckedObjectIdentityDto::deserialize(deserializer)?
+            .is_valid()
+            .map_err(serde::de::Error::custom)
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(transparent)]
-pub struct LocationInfo(#[serde(with = "serde_with::rust::display_fromstr")] pub Location);
+impl FromStr for ObjectIdentityDto {
+    type Err = Error;
+
+    fn from_str(object: &str) -> Result<Self> {
+        let tmp = ObjectIdentity::from_str(object)?;
+        Ok(tmp.into())
+    }
+}
+
+// impl Display for ObjectInfo {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+//         write!(f, "{}", &self.0)
+//     }
+// }
+
+impl From<ObjectIdentityDto> for ObjectIdentity {
+    fn from(object: ObjectIdentityDto) -> ObjectIdentity {
+        ObjectIdentity::new(object.class, &object.reg_number)
+    }
+}
+
+impl From<ObjectIdentity> for ObjectIdentityDto {
+    fn from(object: ObjectIdentity) -> ObjectIdentityDto {
+        Self {
+            class: object.class(),
+            reg_number: object.reg_number().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq, Clone)]
+pub struct LocationInfo {
+    registry: u8,
+    code: u64,
+    desc: String,
+}
+
+impl<'de> Deserialize<'de> for LocationInfo {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct UncheckedLocationInfo {
+            registry: u8,
+            code: u64,
+            #[serde(default)]
+            desc: String,
+        }
+
+        impl UncheckedLocationInfo {
+            fn is_valid(self) -> Result<LocationInfo> {
+                let tmp = LocationInfo {
+                    registry: self.registry,
+                    code: self.code,
+                    desc: self.desc,
+                };
+                let mem_iden = Location::from(tmp.clone());
+                if mem_iden.is_valid() {
+                    Ok(tmp)
+                } else {
+                    Err(Error::bad_location(&mem_iden.to_string()))
+                }
+            }
+        }
+
+        UncheckedLocationInfo::deserialize(deserializer)?
+            .is_valid()
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl From<LocationInfo> for Location {
     fn from(location: LocationInfo) -> Location {
-        location.0
+        Location::new(location.registry, location.code, &location.desc)
     }
 }
 
 impl From<Location> for LocationInfo {
     fn from(location: Location) -> LocationInfo {
-        LocationInfo(location)
+        LocationInfo {
+            registry: location.registry(),
+            code: location.code(),
+            desc: location.desc().to_string(),
+        }
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(transparent)]
-pub struct ClassifierInfo(#[serde(with = "serde_with::rust::display_fromstr")] pub Classifier);
+impl Default for LocationInfo {
+    fn default() -> Self {
+        Location::default().into()
+    }
+}
+
+#[derive(Debug, Default, Serialize, Eq, PartialEq, Clone)]
+pub struct ClassifierInfo {
+    registry: u8,
+    value: String,
+    desc: String,
+}
+
+impl<'de> Deserialize<'de> for ClassifierInfo {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct UncheckedClassifierInfo {
+            registry: u8,
+            value: String,
+            #[serde(default)]
+            desc: String,
+        }
+
+        impl UncheckedClassifierInfo {
+            fn is_valid(self) -> Result<ClassifierInfo> {
+                let tmp = ClassifierInfo {
+                    registry: self.registry,
+                    value: self.value,
+                    desc: self.desc,
+                };
+                let mem_iden = Classifier::from(tmp.clone());
+                mem_iden.is_valid()?;
+                Ok(tmp)
+            }
+        }
+
+        UncheckedClassifierInfo::deserialize(deserializer)?
+            .is_valid()
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl From<ClassifierInfo> for Classifier {
     fn from(classifier: ClassifierInfo) -> Classifier {
-        classifier.0
+        Classifier::new(classifier.registry, &classifier.value, &classifier.desc)
     }
 }
 
 impl From<Classifier> for ClassifierInfo {
     fn from(classifier: Classifier) -> ClassifierInfo {
-        ClassifierInfo(classifier)
+        ClassifierInfo {
+            registry: classifier.registry(),
+            value: classifier.value().to_string(),
+            desc: classifier.desc().to_string(),
+        }
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq, Deserialize)]
 pub struct LotInfo {
     name: String,
     desc: String,
+    // https://aj.srvdev.ru/browse/FIPSOP-963 РБД. Смена механизма установки типа продажи лота
+    // sale_type: Option<SaleType>,
     price: Cost,
-    #[serde(deserialize_with = "serde_with::rust::display_fromstr::deserialize")]
-    sale_type: SaleType,
     opening_time: DateTime<Utc>,
     closing_time: DateTime<Utc>,
-    #[serde(skip_deserializing, default = "LotStatus::default")]
-    status: LotStatus,
 }
 
 impl LotInfo {
-    pub fn into_lot(&self) -> Result<Lot> {
-        verify_lot_name(&self.name)?;
-        verify_lot_desc(&self.desc)?;
+    pub fn into_lot(&self, seller: MemberIdentity, sale_type: SaleType) -> Result<Lot> {
         let price: Cost = self.price.into();
         Ok(Lot::new(
             &self.name,
             &self.desc,
+            seller,
             price.into(),
-            self.sale_type as u8,
+            sale_type as u8,
             self.opening_time,
             self.closing_time,
         ))
-    }
-
-    pub fn set_price(mut self, price: Cost) -> Self {
-        self.price = price;
-        self
-    }
-
-    pub fn set_status(mut self, status: LotStatus) -> Self {
-        self.status = status;
-        self
-    }
-}
-
-impl From<&Lot> for LotInfo {
-    fn from(lot: &Lot) -> Self {
-        let price = Cost::from(lot.price());
-        //TODO remove unwrap
-        let sale_type = SaleType::try_from(lot.sale_type()).unwrap();
-        let status = LotStatus::Undefined;
-        Self {
-            name: lot.name().to_owned(),
-            desc: lot.desc().to_owned(),
-            price,
-            sale_type,
-            opening_time: lot.opening_time(),
-            closing_time: lot.closing_time(),
-            status,
-        }
     }
 }
 
@@ -168,7 +325,7 @@ pub enum OwnershipInfo {
     Unstructured(UnstructuredOwnershipInfo),
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StructuredOwnershipInfo {
     rightholder: MemberInfo,
     contract_type: ContractType,
@@ -178,6 +335,22 @@ pub struct StructuredOwnershipInfo {
     classifiers: Vec<ClassifierInfo>,
     starting_time: DateTime<Utc>,
     expiration_time: Option<DateTime<Utc>>,
+}
+
+impl StructuredOwnershipInfo {
+    pub fn from_rights(rights: Rights, rightholder_id: MemberIdentity) -> Result<Self> {
+        Ok(StructuredOwnershipInfo {
+            rightholder: rightholder_id.into(),
+            contract_type: ContractType::try_from(rights.contract_type())
+                .map_err(|e| Error::internal_bad_struct(&e.to_string()))?,
+            exclusive: rights.is_exclusive(),
+            can_distribute: Distribution::Able,
+            location: rights.location().into_iter().map(Into::into).collect(),
+            classifiers: rights.classifiers().into_iter().map(Into::into).collect(),
+            starting_time: rights.starting_time(),
+            expiration_time: rights.expiration_time(),
+        })
+    }
 }
 
 impl From<StructuredOwnershipInfo> for Ownership {
@@ -195,7 +368,7 @@ impl From<StructuredOwnershipInfo> for Ownership {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnstructuredOwnershipInfo {
     data: Option<String>,
     rightholder: Option<MemberInfo>,
@@ -212,11 +385,21 @@ impl From<UnstructuredOwnershipInfo> for OwnershipUnstructured {
     }
 }
 
+impl From<OwnershipUnstructured> for UnstructuredOwnershipInfo {
+    fn from(v: OwnershipUnstructured) -> Self {
+        UnstructuredOwnershipInfo {
+            data: Some(v.data().to_owned()),
+            rightholder: v.rightholder().map(Into::into),
+            exclusive: v.exclusive().map(Into::into),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ConditionsInfo {
     #[serde(with = "serde_with::rust::display_fromstr")]
-    contract_type: ContractType,
-    objects: Vec<ObjectOwnershipInfo>,
+    pub contract_type: ContractType,
+    pub objects: Vec<ObjectOwnershipInfo>,
     payment_conditions: String,
     #[serde(
         deserialize_with = "serde_with::rust::default_on_null::deserialize",
@@ -284,8 +467,7 @@ impl TryFrom<Conditions> for ConditionsInfo {
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ObjectOwnershipInfo {
-    #[serde(with = "serde_with::rust::display_fromstr")]
-    object: ObjectIdentity,
+    object: ObjectIdentityDto,
     #[serde(deserialize_with = "serde_with::rust::default_on_null::deserialize")]
     contract_term: TermInfo,
     exclusive: bool,
@@ -296,12 +478,18 @@ pub struct ObjectOwnershipInfo {
     classifiers: Vec<ClassifierInfo>,
 }
 
+impl ObjectOwnershipInfo {
+    pub fn is_exclusive(&self) -> bool {
+        self.exclusive
+    }
+}
+
 fn vec_default_on_null<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    Ok(Option::deserialize(deserializer)?.unwrap_or(vec![T::default()]))
+    Ok(Option::deserialize(deserializer)?.unwrap_or_else(|| vec![T::default()]))
 }
 
 impl From<ObjectOwnershipInfo> for ObjectOwnership {
@@ -317,7 +505,7 @@ impl From<ObjectOwnershipInfo> for ObjectOwnership {
             val.classifiers.into_iter().map(Into::into).collect()
         };
         ObjectOwnership::new(
-            val.object,
+            val.object.into(),
             val.contract_term.into(),
             val.exclusive,
             val.can_distribute as u8,
@@ -332,7 +520,7 @@ impl TryFrom<ObjectOwnership> for ObjectOwnershipInfo {
 
     fn try_from(val: ObjectOwnership) -> Result<Self> {
         Ok(Self {
-            object: val.object(),
+            object: val.object().into(),
             contract_term: val.contract_term().try_into()?,
             exclusive: val.exclusive(),
             can_distribute: Distribution::try_from(val.can_distribute())
@@ -414,6 +602,12 @@ pub struct SignInfo(#[serde(with = "serde_with::rust::display_fromstr")] pub Sig
 impl From<SignInfo> for Sign {
     fn from(sign: SignInfo) -> Sign {
         sign.0
+    }
+}
+
+impl From<Sign> for SignInfo {
+    fn from(sign: Sign) -> SignInfo {
+        SignInfo(sign)
     }
 }
 
@@ -528,31 +722,304 @@ impl From<HashInfo> for Hash {
 }
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ContractDocuments {
+    pub deed_file: Option<AttachmentMetadataWithHashDto>,
+    pub application_file: Option<AttachmentMetadataWithHashDto>,
+    pub other_files: Vec<AttachmentMetadataWithHashDto>,
+    pub notification_files: Vec<AttachmentMetadataWithHashDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ContractInfo {
     pub buyer: MemberInfo,
     pub seller: MemberInfo,
     pub price: u64,
     pub conditions: ConditionsInfo,
     pub status: String,
-    pub deed_tx_hash: Option<Hash>,
-    pub application_tx_hash: Option<Hash>,
-    pub stored_docs: Vec<Hash>,
+    pub documents: ContractDocuments,
+    pub reference_number: Option<String>,
+    pub calculations: Vec<CalculationWithPaymentDetailInfo>,
+    pub is_undefined: bool,
+    pub contract_correspondence: Option<String>,
+    pub objects_correspondence: Option<String>,
+}
+
+#[derive(Serialize, Debug, Eq, PartialEq)]
+pub struct LotInfoWithObjects {
+    pub name: String,
+    pub desc: String,
+    pub seller: MemberInfo,
+    pub price: Cost,
+    pub sale_type: SaleType,
+    pub opening_time: DateTime<Utc>,
+    pub closing_time: DateTime<Utc>,
+    pub status: LotStatus,
+    pub is_undefined: bool,
+    pub conditions: ConditionsInfo,
+    pub calculations: Vec<CalculationInfo>,
     pub reference_number: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub struct LotInfoWithObjects {
-    #[serde(flatten)]
-    pub lot: LotInfo,
-    pub objects: Vec<ObjectInfo>,
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct ObjectParticipates {
+    pub lots: Vec<LotId>,
+    pub contracts: Vec<ContractId>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct ObjectData(String);
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Hash)]
+pub struct CalculationInfo {
+    pub id: String,
+    pub data: String,
+    #[serde(skip_deserializing, default = "Utc::now")]
+    pub timestamp: DateTime<Utc>,
+}
 
-impl From<String> for ObjectData {
-    fn from(data: String) -> Self {
-        Self(data)
+impl CalculationInfo {
+    pub fn is_valid(&self) -> Result<()> {
+        if self.id.is_empty() {
+            Error::empty_param("id").ok()?
+        }
+        if self.data.is_empty() {
+            Error::empty_param("data").ok()?
+        }
+        if self.id.len() > 256 {
+            Error::too_long_param("id").ok()?
+        }
+        Ok(())
+    }
+}
+
+impl From<CalculationInfo> for Calculation {
+    fn from(v: CalculationInfo) -> Self {
+        Calculation::new(&v.id, &v.data, v.timestamp)
+    }
+}
+
+impl From<Calculation> for CalculationInfo {
+    fn from(v: Calculation) -> Self {
+        CalculationInfo {
+            id: v.id().to_string(),
+            data: v.data().to_string(),
+            timestamp: v.timestamp(),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, PartialEq, Eq, Hash)]
+pub struct PaymentDetailsInfo {
+    pub calculation: CalculationInfo,
+    payment_detail: String,
+}
+
+impl PaymentDetailsInfo {
+    pub fn is_valid(&self) -> Result<()> {
+        self.calculation.is_valid()?;
+        if self.payment_detail.is_empty() {
+            Error::empty_param("payment_detail").ok()?
+        }
+        if self.payment_detail.len() > 256 {
+            Error::too_long_param("payment_detail").ok()?
+        }
+        Ok(())
+    }
+}
+
+impl From<PaymentDetailsInfo> for PaymentDetail {
+    fn from(v: PaymentDetailsInfo) -> Self {
+        PaymentDetail::new(
+            v.calculation.into(),
+            &v.payment_detail,
+            PaymentStatus::NotPaid as u8,
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct CalculationWithPaymentDetailInfo {
+    calculation: CalculationInfo,
+    payment_detail: Option<PaymentDetailInfo>,
+}
+
+impl TryFrom<PaymentDetail> for CalculationWithPaymentDetailInfo {
+    type Error = Error;
+
+    fn try_from(v: PaymentDetail) -> Result<Self> {
+        let payment_detail = if v.payment_detail().is_empty() {
+            None
+        } else {
+            Some(PaymentDetailInfo {
+                payment_detail: v.payment_detail().to_string(),
+                status: PaymentStatus::try_from(v.status())?,
+            })
+        };
+        Ok(CalculationWithPaymentDetailInfo {
+            calculation: v.calculation().into(),
+            payment_detail,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+struct PaymentDetailInfo {
+    payment_detail: String,
+    status: PaymentStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct PaginationPage<V, K> {
+    pub data: Vec<V>,
+    pub from: K,
+    pub limit: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct ObjectInformationDto {
+    pub object: ObjectIdentityDto,
+    pub data: String,
+    pub ownership: Vec<StructuredOwnershipInfo>,
+    pub unstructured_ownership: Vec<UnstructuredOwnershipInfo>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct ConfirmDto {
+    pub buyer: bool,
+    pub seller: bool,
+}
+
+impl From<RequestConfirm> for ConfirmDto {
+    fn from(v: RequestConfirm) -> Self {
+        Self {
+            buyer: *v.is_buyer(),
+            seller: *v.is_seller(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct RequestConfirmDto {
+    pub status: ConfirmDto,
+    pub status_gone: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct AttachmentMetadataDto {
+    name: String,
+    description: Option<String>,
+    file_type: AttachmentType,
+    timestamp: DateTime<Utc>,
+}
+
+impl TryFrom<AttachmentMetadata> for AttachmentMetadataDto {
+    type Error = Error;
+
+    fn try_from(v: AttachmentMetadata) -> Result<Self> {
+        Ok(Self {
+            name: v.name().to_owned(),
+            description: v.description(),
+            file_type: AttachmentType::try_from(v.file_type())?,
+            timestamp: v.timestamp(),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct AttachmentMetadataWithHashDto {
+    metadata: AttachmentMetadataDto,
+    tx_hash: DocumentId,
+}
+
+impl AttachmentMetadataWithHashDto {
+    pub fn new(tx_hash: DocumentId, metadata: AttachmentMetadataDto) -> Self {
+        AttachmentMetadataWithHashDto { metadata, tx_hash }
+    }
+}
+
+impl TryFrom<AttachmentMetadataWithHash> for AttachmentMetadataWithHashDto {
+    type Error = Error;
+
+    fn try_from(v: AttachmentMetadataWithHash) -> Result<Self> {
+        Ok(Self {
+            metadata: v.metadata().try_into()?,
+            tx_hash: v.tx_hash().to_owned(),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct AttachmentDto {
+    metadata: AttachmentMetadataDto,
+    data: String,
+    sign: Option<SignInfo>,
+    pub buyer_sign: Option<SignInfo>,
+    pub seller_sign: Option<SignInfo>,
+}
+
+// Use only for attachments/doc with single sign, for example deed and application needed in two sign from buyer and from seller.
+impl TryFrom<Attachment> for AttachmentDto {
+    type Error = Error;
+    fn try_from(v: Attachment) -> Result<Self> {
+        Ok(AttachmentDto {
+            metadata: v.metadata().try_into()?,
+            data: base64::encode(v.data()),
+            sign: v.sign().map(Into::into),
+            buyer_sign: None,
+            seller_sign: None,
+        })
+    }
+}
+
+// impl TryFrom<(Attachment, Sign)> for AttachmentDto {
+//     type Error = Error;
+//     fn try_from(v: (Attachment, Sign)) -> Result<Self> {
+//         Ok(AttachmentDto {
+//             metadata: v.0.metadata().try_into()?,
+//             data: base64::encode(v.0.data()),
+//             sign: Some(v.1.into()),
+//         })
+//     }
+// }
+//
+// impl TryFrom<(Attachment, Option<Sign>)> for AttachmentDto {
+//     type Error = Error;
+//     fn try_from(v: (Attachment, Option<Sign>)) -> Result<Self> {
+//         Ok(AttachmentDto {
+//             metadata: v.0.metadata().try_into()?,
+//             data: base64::encode(v.0.data()),
+//             sign: v.1.map(Into::into),
+//         })
+//     }
+// }
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct HashWrapperDto<T: Serialize> {
+    #[serde(flatten)]
+    object: T,
+    tx_hash: Hash,
+}
+
+impl<T: Serialize> HashWrapperDto<T> {
+    pub fn into_hash_wrapper(data: T, hash: Hash) -> HashWrapperDto<T> {
+        HashWrapperDto {
+            object: data,
+            tx_hash: hash,
+        }
+    }
+}
+
+#[cfg(feature = "internal_api")]
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct MemberEsiaTokenDto {
+    token: String,
+    oid: String,
+}
+
+#[cfg(feature = "internal_api")]
+impl From<MemberEsiaToken> for MemberEsiaTokenDto {
+    fn from(value: MemberEsiaToken) -> Self {
+        Self {
+            token: value.token().to_string(),
+            oid: value.oid().to_string(),
+        }
     }
 }
 
@@ -567,40 +1034,38 @@ pub(crate) mod test {
         //     "name": "My Lot 1",
         //     "desc": "Explicit lot description",
         //     "price": "50000",
-        //     "sale_type": "auction",
         //     "opening_time": "2020-12-10T02:00:53+00:00",
         //     "closing_time": "2020-12-31T05:00:53+00:00",
-        //     "status": "undefined"
         // }
         LotInfo {
             name: "My Lot 1".to_string(),
             desc: "Explicit lot description".to_string(),
             price: Cost::from(5000000),
-            sale_type: SaleType::Auction,
             opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
             closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
-            status: Default::default(),
         }
     }
 
     pub fn new_object_ownership_info() -> ObjectOwnershipInfo {
         // {
-        //     "object": "trademark::123451",
+        //     "object": {"class":1,"reg_number":"123451"},
         //     "contract_term": { "specification": "forever" },
         //     "exclusive": false,
         //     "can_distribute": "unable",
-        //     "location": ["oktmo::45379000"],
-        //     "classifier": ["mktu::8", "mktu::13"]
+        //     "location": [{"registry": 1, "code": 45379000,"desc":""}],
+        //     "classifier": [{"registry": 1,"value": "8"}, {"registry": 1,"value": "13"}]
         // }
         ObjectOwnershipInfo {
-            object: ObjectIdentity::from_str("trademark::123451").unwrap(),
+            object: ObjectIdentity::from_str("trademark::123451")
+                .unwrap()
+                .into(),
             contract_term: Default::default(),
             exclusive: false,
             can_distribute: Distribution::Unable,
-            location: vec![LocationInfo(Location::from_str("oktmo::45379000").unwrap())],
+            location: vec![Location::from_str("oktmo::45379000").unwrap().into()],
             classifiers: vec![
-                ClassifierInfo(Classifier::from_str("mktu::8").unwrap()),
-                ClassifierInfo(Classifier::from_str("mktu::13").unwrap()),
+                Classifier::from_str("mktu::8").unwrap().into(),
+                Classifier::from_str("mktu::13").unwrap().into(),
             ],
         }
     }
@@ -609,12 +1074,12 @@ pub(crate) mod test {
         // {
         //     "contract_type": "license",
         //     "objects": {
-        //         "object": "trademark::123451",
+        //         "object": {"class":1,"reg_number":"123451"},
         //         "contract_term": { "specification": "forever" },
         //         "exclusive": false,
         //         "can_distribute": "unable",
-        //         "location": "oktmo::45379000",
-        //         "classifier": ["mktu::8", "mktu::13"],
+        //         "location": {"registry": 1, "code": 45379000,"desc":""},
+        //         "classifier": [{"registry": 1,"value": "8"}, {"registry": 1,"value": "13"}],
         //     },
         //     "payment_conditions": "Condition desc text",
         //     "payment_comment": null,
@@ -644,22 +1109,24 @@ pub(crate) mod test {
 
     pub fn new_structured_ownership_info() -> StructuredOwnershipInfo {
         // {
-        //     "rightholder": "ogrn::5068681643685",
+        //     "rightholder": {"class":0,"number":"5068681643685"},
         //     "contract_type": "license",
         //     "exclusive": true,
         //     "can_distribute": "able",
-        //     "location": [ "oktmo::45379000" ],
-        //     "classifiers": [ "mktu::8" ],
+        //     "location": [ {"registry": 1, "code": 45379000, "desc":""} ],
+        //     "classifiers": [ {"registry": 1,"value": "8"} ],
         //     "starting_time": "2020-06-01T00:00:00Z",
         //     "expiration_time": "2021-06-01T00:00:00Z"
         // }
         StructuredOwnershipInfo {
-            rightholder: MemberInfo(MemberIdentity::from_str("ogrn::5068681643685").unwrap()),
+            rightholder: MemberIdentity::from_str("ogrn::5068681643685")
+                .unwrap()
+                .into(),
             contract_type: ContractType::License,
             exclusive: true,
             can_distribute: Distribution::Able,
-            location: vec![LocationInfo(Location::from_str("oktmo::45379000").unwrap())],
-            classifiers: vec![ClassifierInfo(Classifier::from_str("mktu::8").unwrap())],
+            location: vec![Location::from_str("oktmo::45379000").unwrap().into()],
+            classifiers: vec![Classifier::from_str("mktu::8").unwrap().into()],
             starting_time: DateTime::<Utc>::from_str("2020-06-01T00:00:00Z").unwrap(),
             expiration_time: Some(DateTime::<Utc>::from_str("2021-06-01T00:00:00Z").unwrap()),
         }
@@ -669,12 +1136,12 @@ pub(crate) mod test {
     fn de_ownership_info_structured() {
         let object_json = r#"{
             "representation": "structured",
-            "rightholder": "ogrn::5068681643685",
+            "rightholder": {"class":0,"number":"5068681643685"},
             "contract_type": "license",
             "exclusive": true,
             "can_distribute": "able",
-            "location": [ "oktmo::45379000" ],
-            "classifiers": [ "mktu::8" ],
+            "location": [ {"registry": 1, "code": 45379000,"desc":""} ],
+            "classifiers": [ {"registry": 1,"value": "8"} ],
             "starting_time": "2020-06-01T00:00:00Z",
             "expiration_time": "2021-06-01T00:00:00Z"
         }"#;
@@ -687,12 +1154,14 @@ pub(crate) mod test {
     fn de_ownership_info_unstructured() {
         let object_json = r#"{
             "representation": "unstructured",
-            "rightholder": "ogrn::5068681643685"
+            "rightholder": {"class":0,"number":"5068681643685"}
         }"#;
         let expected = OwnershipInfo::Unstructured(UnstructuredOwnershipInfo {
-            rightholder: Some(MemberInfo(
-                MemberIdentity::from_str("ogrn::5068681643685").unwrap(),
-            )),
+            rightholder: Some(
+                MemberIdentity::from_str("ogrn::5068681643685")
+                    .unwrap()
+                    .into(),
+            ),
             data: None,
             exclusive: None,
         });
@@ -700,40 +1169,58 @@ pub(crate) mod test {
         assert_eq!(deserialized, expected)
     }
 
-    #[test]
-    fn de_object_info() {
-        use std::str::FromStr;
-
-        let object_json = r#""trademark::123""#;
-        let parced: ObjectInfo =
-            serde_json::from_str(object_json).expect("Unable to parse ObjectInfo");
-        let expected = ObjectInfo(ObjectIdentity::from_str("trademark::123").unwrap());
-        assert_eq!(parced, expected);
-    }
+    // #[test]
+    // fn de_object_info() {
+    //     let object_json = vec![
+    //         r#""trademark::2020630178""#,
+    //         r#""wellknown_trademark::2020630178""#,
+    //         r#""appellation_of_origin::2020630178""#,
+    //         r#""appellation_of_origin_rights::2020630178/2354""#,
+    //         r#""pharmaceutical::2020630178""#,
+    //         r#""invention::2020630178""#,
+    //         r#""utility_model::2020630178""#,
+    //         r#""industrial_model::2020630178""#,
+    //         r#""tims::2020630178""#,
+    //         r#""program::2020630178""#,
+    //         r#""database::2020630178""#,
+    //     ];
+    //     let parsed = object_json
+    //         .iter()
+    //         .map(|value| serde_json::from_str(value).expect("Unable to parse ObjectInfo"))
+    //         .collect::<Vec<ObjectInfo>>();
+    //     for x in object_json.into_iter().zip(parsed) {
+    //         let right = format!("\"{}\"", x.1);
+    //         assert_eq!(x.0, &right);
+    //     }
+    // }
 
     #[test]
     fn ser_object_info() {
         use std::str::FromStr;
 
-        let data = ObjectInfo(ObjectIdentity::from_str("trademark::123").unwrap());
+        let data: ObjectIdentityDto = ObjectIdentity::from_str("trademark::123").unwrap().into();
         let result = serde_json::to_string(&data).expect("Unable to serialize ObjectInfo");
-        assert_eq!(result, r#""trademark::123""#);
+        assert_eq!(result, r#"{"class":1,"reg_number":"123"}"#);
     }
 
     #[test]
     fn de_member_info() {
         use std::str::FromStr;
 
-        let member_ogrn_json = r#""ogrn::1053600591197""#;
+        let member_ogrn_json = r#"{"class":0,"number":"1053600591197"}"#;
         let parced_ogrn: MemberInfo =
             serde_json::from_str(member_ogrn_json).expect("Unable to parse MemberInfo");
-        let expected_ogrn = MemberInfo(MemberIdentity::from_str("ogrn::1053600591197").unwrap());
+        let expected_ogrn = MemberIdentity::from_str("ogrn::1053600591197")
+            .unwrap()
+            .into();
         assert_eq!(parced_ogrn, expected_ogrn);
 
-        let member_snils_json = r#""snils::02583651862""#;
+        let member_snils_json = r#"{"class":2,"number":"02583651862"}"#;
         let parced_snils: MemberInfo =
             serde_json::from_str(member_snils_json).expect("Unable to parse MemberInfo");
-        let expected_snils = MemberInfo(MemberIdentity::from_str("snils::02583651862").unwrap());
+        let expected_snils = MemberIdentity::from_str("snils::02583651862")
+            .unwrap()
+            .into();
         assert_eq!(parced_snils, expected_snils);
     }
 
@@ -741,15 +1228,19 @@ pub(crate) mod test {
     fn ser_member_info() {
         use std::str::FromStr;
 
-        let ogrn_data = MemberInfo(MemberIdentity::from_str("ogrn::1053600591197").unwrap());
-        let ogrn_result =
-            serde_json::to_string(&ogrn_data).expect("Unable to serialize MemberInfo");
-        assert_eq!(ogrn_result, r#""ogrn::1053600591197""#);
+        let ogrn_data = MemberIdentity::from_str("ogrn::1053600591197")
+            .unwrap()
+            .into();
+        let ogrn_result = serde_json::to_string::<MemberInfo>(&ogrn_data)
+            .expect("Unable to serialize MemberInfo");
+        assert_eq!(ogrn_result, r#"{"class":0,"number":"1053600591197"}"#);
 
-        let snils_data = MemberInfo(MemberIdentity::from_str("snils::02583651862").unwrap());
-        let snils_result =
-            serde_json::to_string(&snils_data).expect("Unable to serialize MemberInfo");
-        assert_eq!(snils_result, r#""snils::02583651862""#);
+        let snils_data = MemberIdentity::from_str("snils::02583651862")
+            .unwrap()
+            .into();
+        let snils_result = serde_json::to_string::<MemberInfo>(&snils_data)
+            .expect("Unable to serialize MemberInfo");
+        assert_eq!(snils_result, r#"{"class":2,"number":"02583651862"}"#);
     }
 
     #[test]
@@ -800,23 +1291,25 @@ pub(crate) mod test {
     fn de_object_ownership_info() {
         let json = r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": { "specification": "forever" },
             "exclusive": false,
             "can_distribute": "unable",
-            "location": ["oktmo::45379000"],
-            "classifiers": ["mktu::8", "mktu::13"]
+            "location": [{"registry":1,"code":45379000}],
+            "classifiers": [{"registry":1,"value":"8","desc":"1234"},{"registry": 1,"value":"13"}]
         }"#;
 
         let true_val = ObjectOwnershipInfo {
-            object: ObjectIdentity::from_str("trademark::123451").unwrap(),
+            object: ObjectIdentity::from_str("trademark::123451")
+                .unwrap()
+                .into(),
             contract_term: Default::default(),
             exclusive: false,
             can_distribute: Distribution::Unable,
-            location: vec![LocationInfo(Location::from_str("oktmo::45379000").unwrap())],
+            location: vec![Location::from_str("oktmo::45379000").unwrap().into()],
             classifiers: vec![
-                ClassifierInfo(Classifier::from_str("mktu::8").unwrap()),
-                ClassifierInfo(Classifier::from_str("mktu::13").unwrap()),
+                Classifier::from_str("mktu::8::1234").unwrap().into(),
+                Classifier::from_str("mktu::13").unwrap().into(),
             ],
         };
         let val = serde_json::from_str(json).unwrap();
@@ -827,7 +1320,7 @@ pub(crate) mod test {
     fn de_object_ownership_info_with_nulls() {
         let json = r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -836,12 +1329,14 @@ pub(crate) mod test {
         }"#;
 
         let true_val = ObjectOwnershipInfo {
-            object: ObjectIdentity::from_str("trademark::123451").unwrap(),
+            object: ObjectIdentity::from_str("trademark::123451")
+                .unwrap()
+                .into(),
             contract_term: Default::default(),
             exclusive: false,
             can_distribute: Distribution::Unable,
-            location: vec![LocationInfo(Location::default())],
-            classifiers: vec![ClassifierInfo(Classifier::default())],
+            location: vec![Location::default().into()],
+            classifiers: vec![Classifier::default().into()],
         };
         let val: ObjectOwnershipInfo = serde_json::from_str(json).unwrap();
         assert_eq!(true_val, val);
@@ -852,7 +1347,7 @@ pub(crate) mod test {
         let json = vec![
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -861,7 +1356,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -870,7 +1365,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -879,7 +1374,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -888,7 +1383,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -897,7 +1392,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -906,7 +1401,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -915,7 +1410,7 @@ pub(crate) mod test {
         }"#,
             r#"
         {
-            "object": "trademark::123451",
+            "object": {"class":1,"reg_number":"123451"},
             "contract_term": null,
             "exclusive": false,
             "can_distribute": "unable",
@@ -931,17 +1426,33 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn se_conditions_info() {
+        let json = r#"{"contract_type":"license","objects":[{"object":{"class":1,"reg_number":"123451"},"contract_term":{"specification":"forever"},"exclusive":false,"can_distribute":"unable","location":[{"registry":1,"code":45379000,"desc":""}],"classifiers":[{"registry":1,"value":"8","desc":""},{"registry":1,"value":"13","desc":""}]}],"payment_conditions":"Condition desc text","payment_comment":"test text","termination_conditions":["Term cond 1","Term cond 2"],"contract_extras":["Extra comment"]}"#;
+
+        let true_val = ConditionsInfo {
+            contract_type: ContractType::License,
+            objects: vec![new_object_ownership_info()],
+            payment_conditions: "Condition desc text".to_string(),
+            payment_comment: "test text".to_string(),
+            termination_conditions: vec!["Term cond 1".to_string(), "Term cond 2".to_string()],
+            contract_extras: vec!["Extra comment".to_string()],
+        };
+        let val = serde_json::to_string(&true_val).unwrap();
+        assert_eq!(json, val);
+    }
+
+    #[test]
     fn de_conditions_info() {
         let json = r#"
         {
             "contract_type": "license",
             "objects": [{
-                "object": "trademark::123451",
+                "object": {"class":1,"reg_number":"123451"},
                 "contract_term": { "specification": "forever" },
                 "exclusive": false,
                 "can_distribute": "unable",
-                "location": ["oktmo::45379000"],
-                "classifiers": ["mktu::8", "mktu::13"]
+                "location": [{"registry": 1, "code": 45379000,"desc":""}],
+                "classifiers": [{"registry": 1,"value": "8"}, {"registry": 1,"value": "13"}]
             }],
             "payment_conditions": "Condition desc text",
             "payment_comment": "test text",
@@ -967,12 +1478,12 @@ pub(crate) mod test {
         {
             "contract_type": "license",
             "objects": [{
-                "object": "trademark::123451",
+                "object": {"class":1,"reg_number":"123451"},
                 "contract_term": { "specification": "forever" },
                 "exclusive": false,
                 "can_distribute": "unable",
-                "location": ["oktmo::45379000"],
-                "classifiers": ["mktu::8", "mktu::13"]
+                "location": [{"registry": 1, "code": 45379000,"desc":""}],
+                "classifiers": [{"registry": 1,"value": "8"}, {"registry": 1,"value": "13"}]
             }],
             "payment_conditions": "Condition desc text",
             "payment_comment": null,
@@ -1055,88 +1566,107 @@ pub(crate) mod test {
                 "name": "My Lot 1",
                 "desc": "Explicit lot description",
                 "price": 50000,
-                "sale_type": "auction",
                 "opening_time": "2020-12-10T02:00:53+00:00",
-                "closing_time": "2020-12-31T05:00:53+00:00",
-                "status": "undefined"
+                "closing_time": "2020-12-31T05:00:53+00:00"
             }"#;
         let true_val = LotInfo {
             name: "My Lot 1".to_string(),
             desc: "Explicit lot description".to_string(),
             price: Cost::from(50000),
-            sale_type: SaleType::Auction,
             opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
             closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
-            status: Default::default(),
         };
         let val = serde_json::from_str(json).unwrap();
         assert_eq!(true_val, val);
     }
 
+    // #[test]
+    // fn se_lot_info() {
+    //     let true_json = r#"{"name":"My Lot 1","desc":"Explicit lot description","price":50000,"sale_type":"auction","opening_time":"2020-12-10T02:00:53Z","closing_time":"2020-12-31T05:00:53Z","status":"undefined"}"#;
+    //     let val = LotInfo {
+    //         name: "My Lot 1".to_string(),
+    //         desc: "Explicit lot description".to_string(),
+    //         price: Cost::from(50000),
+    //         sale_type: SaleType::Auction,
+    //         opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
+    //         closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
+    //         status: Default::default(),
+    //     };
+    //     let val = serde_json::to_string(&val).unwrap();
+    //     assert_eq!(val, true_json);
+    // }
+
+    // #[test]
+    // fn de_lot_info_with_objects() {
+    //     let json = r#"{
+    //             "name": "My Lot 1",
+    //             "desc": "Explicit lot description",
+    //             "price": 50000,
+    //             "sale_type": "auction",
+    //             "opening_time": "2020-12-10T02:00:53+00:00",
+    //             "closing_time": "2020-12-31T05:00:53+00:00",
+    //             "status": "undefined",
+    //             "objects": ["trademark::123"]
+    //         }"#;
+    //     let true_val = LotInfoWithObjects {
+    //         lot: LotInfo {
+    //             name: "My Lot 1".to_string(),
+    //             desc: "Explicit lot description".to_string(),
+    //             price: Cost::from(50000),
+    //             sale_type: SaleType::Auction,
+    //             opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
+    //             closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
+    //             status: Default::default(),
+    //         },
+    //         objects: vec![ObjectInfo(
+    //             ObjectIdentity::from_str("trademark::123").unwrap(),
+    //         )],
+    //     };
+    //     let val = serde_json::from_str(json).unwrap();
+    //     assert_eq!(true_val, val);
+    // }
+
     #[test]
-    fn se_lot_info() {
-        let true_json = r#"{"name":"My Lot 1","desc":"Explicit lot description","price":50000,"sale_type":"auction","opening_time":"2020-12-10T02:00:53Z","closing_time":"2020-12-31T05:00:53Z","status":"undefined"}"#;
-        let val = LotInfo {
+    fn se_lot_info_with_objects() {
+        let true_json = r#"{"name":"My Lot 1","desc":"Explicit lot description","seller":{"class":0,"number":"1053600591197"},"price":50000,"sale_type":"auction","opening_time":"2020-12-10T02:00:53Z","closing_time":"2020-12-31T05:00:53Z","status":"new","is_undefined":false,"conditions":{"contract_type":"license","objects":[{"object":{"class":1,"reg_number":"123451"},"contract_term":{"specification":"forever"},"exclusive":false,"can_distribute":"unable","location":[{"registry":1,"code":45379000,"desc":""}],"classifiers":[{"registry":1,"value":"8","desc":""},{"registry":1,"value":"13","desc":""}]}],"payment_conditions":"Condition desc text","payment_comment":"test text","termination_conditions":["Term cond 1","Term cond 2"],"contract_extras":["Extra comment"]},"calculations":[],"reference_number":null}"#;
+        let val = LotInfoWithObjects {
             name: "My Lot 1".to_string(),
             desc: "Explicit lot description".to_string(),
+            seller: MemberIdentity::from_str("ogrn::1053600591197")
+                .unwrap()
+                .into(),
             price: Cost::from(50000),
             sale_type: SaleType::Auction,
             opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
             closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
-            status: Default::default(),
+            status: LotStatus::New,
+            is_undefined: false,
+            conditions: ConditionsInfo {
+                contract_type: ContractType::License,
+                objects: vec![new_object_ownership_info()],
+                payment_conditions: "Condition desc text".to_string(),
+                payment_comment: "test text".to_string(),
+                termination_conditions: vec!["Term cond 1".to_string(), "Term cond 2".to_string()],
+                contract_extras: vec!["Extra comment".to_string()],
+            },
+            calculations: vec![],
+            reference_number: None,
         };
         let val = serde_json::to_string(&val).unwrap();
         assert_eq!(val, true_json);
     }
 
     #[test]
-    fn de_lot_info_with_objects() {
+    fn de_calculation_info() {
         let json = r#"{
-                "name": "My Lot 1",
-                "desc": "Explicit lot description",
-                "price": 50000,
-                "sale_type": "auction",
-                "opening_time": "2020-12-10T02:00:53+00:00",
-                "closing_time": "2020-12-31T05:00:53+00:00",
-                "status": "undefined",
-                "objects": ["trademark::123"]
+                "id": "1234",
+                "data": "asdf"
             }"#;
-        let true_val = LotInfoWithObjects {
-            lot: LotInfo {
-                name: "My Lot 1".to_string(),
-                desc: "Explicit lot description".to_string(),
-                price: Cost::from(50000),
-                sale_type: SaleType::Auction,
-                opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
-                closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
-                status: Default::default(),
-            },
-            objects: vec![ObjectInfo(
-                ObjectIdentity::from_str("trademark::123").unwrap(),
-            )],
+        let _true_val = CalculationInfo {
+            id: "1234".to_string(),
+            data: "asdf".to_string(),
+            timestamp: Utc::now(),
         };
-        let val = serde_json::from_str(json).unwrap();
-        assert_eq!(true_val, val);
-    }
-
-    #[test]
-    fn se_lot_info_with_objects() {
-        let true_json = r#"{"name":"My Lot 1","desc":"Explicit lot description","price":50000,"sale_type":"auction","opening_time":"2020-12-10T02:00:53Z","closing_time":"2020-12-31T05:00:53Z","status":"undefined","objects":["trademark::123"]}"#;
-        let val = LotInfoWithObjects {
-            lot: LotInfo {
-                name: "My Lot 1".to_string(),
-                desc: "Explicit lot description".to_string(),
-                price: Cost::from(50000),
-                sale_type: SaleType::Auction,
-                opening_time: DateTime::<Utc>::from_str("2020-12-10T02:00:53+00:00").unwrap(),
-                closing_time: DateTime::<Utc>::from_str("2020-12-31T05:00:53+00:00").unwrap(),
-                status: Default::default(),
-            },
-            objects: vec![ObjectInfo(
-                ObjectIdentity::from_str("trademark::123").unwrap(),
-            )],
-        };
-        let val = serde_json::to_string(&val).unwrap();
-        assert_eq!(val, true_json);
+        let _val: CalculationInfo = serde_json::from_str(json).unwrap();
     }
 }

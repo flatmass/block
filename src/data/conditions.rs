@@ -2,6 +2,7 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
 use num_enum::TryFromPrimitive;
+use serde::{Deserialize, Serialize};
 
 use blockp_core::storage::Snapshot;
 
@@ -22,9 +23,10 @@ pub enum ContractType {
     Undefined = 0,
     License = 1,
     Sublicense = 2,
-    ConcessionAgreement = 4,
-    SubconcessionAgreement = 8,
-    Expropriation = 16,
+    ConcessionAgreement = 3,
+    SubconcessionAgreement = 4,
+    Expropriation = 5,
+    PledgeAgreement = 6,
 }
 
 impl FromStr for ContractType {
@@ -158,7 +160,7 @@ impl Conditions {
                 term_check.and(0);
             }
             // All ownership information is structured
-            else if let Some(rights) = schema.rights(&seller.id(), obj_id) {
+            else if let Some(rights) = schema.rights(&seller, obj_id) {
                 struct_check.and(1);
                 term_check.and(rights.check_term(&object, obj_ownership.contract_term())?);
             }

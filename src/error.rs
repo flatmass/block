@@ -1,10 +1,14 @@
+use std::convert::TryFrom;
 use std::fmt;
+use std::num::NonZeroU8;
 
+use actix_web::error::{InternalResponseErrorAsFail, MultipartError, ParseError};
 use actix_web::{HttpResponse, ResponseError};
 use chrono::{DateTime, Utc};
+use failure::Fail;
 use futures::IntoFuture;
-use serde::ser::Serialize;
-use serde::Serializer;
+use num_enum::TryFromPrimitive;
+use serde::{Serialize, Serializer};
 
 use blockp_core::api::backends::actix::FutureResponse;
 use blockp_core::crypto::Hash;
@@ -16,8 +20,6 @@ use crate::data::lot::LotId;
 use crate::data::member::MemberIdentity;
 use crate::data::object::ObjectIdentity;
 use crate::response;
-use num_enum::TryFromPrimitive;
-use std::convert::TryFrom;
 
 #[repr(u8)]
 #[derive(Debug, Fail, Clone, Copy, Serialize, TryFromPrimitive)]
@@ -52,6 +54,24 @@ enum Code {
     #[fail(display = "Check failed")]
     CheckFail = 10,
 
+    #[fail(display = "Bad lot state")]
+    LotIsNotNew = 11,
+
+    #[fail(display = "Bad lot state")]
+    LotIsNotVerified = 12,
+
+    #[fail(display = "Bad lot state")]
+    LotIsClosed = 13,
+
+    #[fail(display = "Bad lot state")]
+    LotIsRejected = 14,
+
+    #[fail(display = "Esia auth error")]
+    Esia = 15,
+
+    #[fail(display = "Error while requesting external resource(for instance ESIA)")]
+    ExternalRequest = 16,
+
     #[fail(display = "Other error")]
     Other = 255, // do not use in transactions
 }
@@ -76,6 +96,11 @@ impl Error {
 
     pub fn no_attachment(doc_tx_hash: &DocumentId) -> Self {
         let desc = format!("attachment wasn't found '{}'", doc_tx_hash);
+        Error::with_info(Code::NotFound, desc)
+    }
+
+    pub fn no_member_token() -> Self {
+        let desc = format!("Token not found");
         Error::with_info(Code::NotFound, desc)
     }
 
@@ -151,18 +176,13 @@ impl Error {
         Error::with_info(Code::AlreadyExists, desc)
     }
 
-    pub fn locked_object(object: &ObjectIdentity) -> Self {
-        let desc = format!("object is locked '{}'", object);
-        Error::with_info(Code::PermissionDenied, desc)
-    }
-
     pub fn action_refused(info: &str) -> Self {
         let desc = format!("action refused: '{}'", info);
         Error::with_info(Code::PermissionDenied, desc)
     }
 
-    pub fn bad_object_format(object: &str) -> Self {
-        let desc = format!("bad object identity '{}'", object);
+    pub fn bad_object_format(object: &str, reason: &str) -> Self {
+        let desc = format!("bad object identity by {} '{}'", reason, object);
         Error::with_info(Code::BadValue, desc)
     }
 
@@ -238,6 +258,11 @@ impl Error {
         Error::with_info(Code::BadParam, desc)
     }
 
+    pub fn duplicate_values(param: &str) -> Self {
+        let desc = format!("parameter '{}' values duplicated", param);
+        Error::with_info(Code::BadValue, desc)
+    }
+
     pub fn empty_param(name: &str) -> Self {
         let desc = format!("parameter '{}' is required, value is empty", name);
         Error::with_info(Code::BadParam, desc)
@@ -311,8 +336,18 @@ impl Error {
         Error::with_info(Code::BadValue, desc)
     }
 
+    pub fn bad_payment_status(payment_status: &str) -> Self {
+        let desc = format!("Bad payment status: {:?}", payment_status);
+        Error::with_info(Code::BadValue, desc)
+    }
+
     pub fn unexpected_file_type() -> Self {
         let desc = format!("Unexpected file type");
+        Error::with_info(Code::Unexpected, desc)
+    }
+
+    pub fn unexpected_payment_status() -> Self {
+        let desc = format!("Unexpected payment status");
         Error::with_info(Code::Unexpected, desc)
     }
 
@@ -352,15 +387,87 @@ impl Error {
 
     pub fn no_reference_number(contract_id: &ContractId) -> Self {
         let desc = format!(
-            "reference number for contract '{}' from fips wasn't found ",
+            "reference number for contract '{}' from fips wasn't found",
             contract_id
         );
         Error::with_info(Code::NotFound, desc)
     }
 
+    pub fn reference_number_already_exist(contract_id: &ContractId) -> Self {
+        let desc = format!(
+            "reference number for contract '{}' already exist",
+            contract_id
+        );
+        Error::with_info(Code::AlreadyExists, desc)
+    }
+
     pub fn invalid_string_length(expected: usize) -> Self {
         let desc = format!("expecting string with length = {}", expected);
         Error::with_info(Code::BadValue, desc)
+    }
+
+    pub fn buyer_is_rightholder(buyer: &MemberIdentity, rightholder: &MemberIdentity) -> Self {
+        let desc = format!("buyer: {} is right holder: {}", buyer, rightholder);
+        Error::with_info(Code::BadValue, desc)
+    }
+
+    pub fn lot_is_undefined(lot_id: &LotId) -> Self {
+        let desc = format!("Lot {} is undefined. Try again later", lot_id);
+        Error::with_info(Code::Internal, desc.to_owned())
+    }
+
+    pub fn contract_is_undefined(contract_id: &ContractId) -> Self {
+        let desc = format!(
+            "Contract {} is undefined. One of the objects has changed. Try again later",
+            contract_id
+        );
+        Error::with_info(Code::Internal, desc.to_owned())
+    }
+
+    pub fn lot_is_not_new(lot_id: &LotId) -> Self {
+        let desc = format!("Lot {} is not new", lot_id);
+        Error::with_info(Code::LotIsNotNew, desc.to_owned())
+    }
+
+    pub fn lot_is_not_verified(lot_id: &LotId) -> Self {
+        let desc = format!("Lot {} is not verified", lot_id);
+        Error::with_info(Code::LotIsNotVerified, desc.to_owned())
+    }
+
+    pub fn lot_is_closed(lot_id: &LotId) -> Self {
+        let desc = format!("Lot {} is closed", lot_id);
+        Error::with_info(Code::LotIsClosed, desc.to_owned())
+    }
+
+    pub fn lot_is_rejected(lot_id: &LotId) -> Self {
+        let desc = format!("Lot {} is rejected", lot_id);
+        Error::with_info(Code::LotIsRejected, desc.to_owned())
+    }
+
+    pub fn no_calculation_for_contract(calculation_id: &str, contract_id: &ContractId) -> Self {
+        let desc = format!(
+            "Calculation with id:{} for contract:{} wasn't found",
+            calculation_id, contract_id
+        );
+        Error::with_info(Code::NotFound, desc.to_owned())
+    }
+
+    pub fn no_calculation_for_lot(lot_id: &LotId) -> Self {
+        let desc = format!("Calculation for lot:{} wasn't found", lot_id);
+        Error::with_info(Code::NotFound, desc.to_owned())
+    }
+
+    pub fn esia_invalid_member(member: &MemberIdentity) -> Self {
+        let desc = format!("Invalid MemberIdentity: {}.", member);
+        Error::with_info(Code::Esia, desc.to_owned())
+    }
+
+    pub fn while_requesting(status_code: &reqwest::StatusCode, body: serde_json::Value) -> Self {
+        let desc = format!(
+            "Unexpected error while requesting with status code: {}, body: {}",
+            status_code, body
+        );
+        Error::with_info(Code::ExternalRequest, desc.to_owned())
     }
 
     pub fn ok<T>(self) -> Result<T> {
@@ -393,8 +500,8 @@ impl Error {
         Error { code, desc }
     }
 
-    pub fn code(&self) -> u8 {
-        self.code as u8
+    pub fn code(&self) -> NonZeroU8 {
+        unsafe { NonZeroU8::new_unchecked(self.code as u8) }
     }
 
     pub fn info(&self) -> &str {
@@ -513,6 +620,78 @@ impl From<actix_web::error::PayloadError> for Error {
     }
 }
 
+impl From<actix_web::error::ParseError> for Error {
+    fn from(err: actix_web::error::ParseError) -> Self {
+        match err {
+            ParseError::Method => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Uri(_) => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Version => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Header => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::TooLarge => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Incomplete => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Status => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Timeout => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Io(_) => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+            ParseError::Utf8(_) => {
+                let desc = format!("Parse error. {}", err.as_fail());
+                Error::with_info(Code::BadParam, desc)
+            }
+        }
+    }
+}
+
+impl From<actix_web::error::MultipartError> for Error {
+    fn from(err: actix_web::error::MultipartError) -> Self {
+        match err {
+            MultipartError::NoContentType => {
+                let desc = format!("Content type error. No Content-type header found");
+                Error::with_info(Code::BadParam, desc)
+            }
+            MultipartError::ParseContentType => {
+                let desc = format!("Content type error. Can not parse Content-Type header");
+                Error::with_info(Code::BadParam, desc)
+            }
+            MultipartError::Boundary => {
+                let desc = format!("Multipart boundary is not found. Check parameters sent");
+                Error::with_info(Code::BadParam, desc)
+            }
+            MultipartError::Incomplete => {
+                let desc = format!("Multipart stream is incomplete");
+                Error::with_info(Code::BadParam, desc)
+            }
+            MultipartError::Parse(e) => e.into(),
+            MultipartError::Payload(e) => e.into(),
+        }
+    }
+}
+
 impl From<actix_web::error::JsonPayloadError> for Error {
     fn from(err: actix_web::error::JsonPayloadError) -> Self {
         match err {
@@ -524,6 +703,13 @@ impl From<actix_web::error::JsonPayloadError> for Error {
             actix_web::error::JsonPayloadError::Deserialize(err) => err.into(),
             actix_web::error::JsonPayloadError::Payload(err) => err.into(),
         }
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Self {
+        let desc = format!("Display: {}\nDebug: {:?}", err, err);
+        Error::with_info(Code::ExternalRequest, desc)
     }
 }
 

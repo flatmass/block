@@ -1,10 +1,14 @@
-use crate::error::Error;
-use blockp_core::crypto::{self, Hash};
-use num_enum::TryFromPrimitive;
-use serde_plain;
 use std::convert::TryFrom;
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
+
+use num_enum::TryFromPrimitive;
+use serde::{Deserialize, Serialize};
+use serde_plain;
+
+use blockp_core::crypto::{self, Hash};
+
+use crate::error::Error;
 
 pub type ObjectId = Hash;
 
@@ -21,6 +25,10 @@ pub enum ObjectType {
     Invention = 6,
     UtilityModel = 7,
     IndustrialModel = 8,
+    Tims = 9,
+    Program = 10,
+    Database = 11,
+    GeographicalIndication = 12,
 }
 
 impl fmt::Display for ObjectType {
@@ -55,7 +63,7 @@ impl ObjectIdentity {
 
     pub fn is_valid(&self) -> bool {
         match self.class() {
-            0..=8 => {}
+            0..=12 => {}
             _ => return false,
         };
 
@@ -73,6 +81,7 @@ impl ObjectIdentity {
     pub fn is_sellable(&self) -> bool {
         self.class() != ObjectType::AppellationOfOrigin as u8
             && self.class() != ObjectType::AppellationOfOriginRights as u8
+            && self.class() != ObjectType::GeographicalIndication as u8
     }
 
     pub fn is_trademark(&self) -> bool {
@@ -137,7 +146,7 @@ impl ObjectIdentity {
         if object.is_valid() {
             Ok(object)
         } else {
-            Error::bad_object_format(&object.to_string()).ok()
+            Error::bad_object_format(&object.to_string(), "invalid number").ok()
         }
     }
 }
@@ -148,10 +157,10 @@ impl FromStr for ObjectIdentity {
     fn from_str(object: &str) -> Result<Self, Self::Err> {
         let parts = object.split("::").collect::<Vec<&str>>();
         if parts.len() != 2 {
-            return Error::bad_object_format(object).ok();
+            return Error::bad_object_format(object, "invalid format").ok();
         }
         let object_type = serde_plain::from_str::<ObjectType>(parts[0])
-            .map_err(|_| Error::bad_object_format(object))?;
+            .map_err(|_| Error::bad_object_format(object, "invalid object type"))?;
         let id = parts[1];
 
         ObjectIdentity::new_verified(object_type, id)

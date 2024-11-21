@@ -7,11 +7,15 @@ use serde::{Deserialize, Serialize};
 
 use blockp_core::crypto::Hash;
 
+use crate::data::member::MemberIdentity;
 use crate::error::{self, Error};
 
 pub type LotId = Hash;
 
 pub fn verify_lot_name(name: &str) -> error::Result<()> {
+    if name.is_empty() {
+        return Err(Error::empty_param("name"));
+    }
     if name.len() <= 256 {
         Ok(())
     } else {
@@ -33,7 +37,7 @@ pub fn verify_lot_desc(desc: &str) -> error::Result<()> {
 #[serde(rename_all = "snake_case")]
 pub enum SaleType {
     Auction = 1,
-    PrivateSale,
+    PrivateSale = 2,
 }
 
 impl FromStr for SaleType {
@@ -48,6 +52,7 @@ encoding_struct! {
     struct Lot {
         name: &str,
         desc: &str,
+        seller: MemberIdentity,
         price: u64,
         sale_type: u8,
         opening_time: DateTime<Utc>,
@@ -87,32 +92,58 @@ encoding_struct! {
         name: &str,
         price: u64,
         status: u8,
+        /// something has been changed with objects while lot was opened
+        undefined: bool
     }
 }
 
 impl LotState {
     pub fn open(name: &str, price: u64) -> Self {
-        LotState::new(name, price, LotStatus::New as u8)
+        LotState::new(name, price, LotStatus::New as u8, false)
     }
 
     pub fn set_price(self, price: u64) -> Self {
-        LotState::new(self.name(), price, self.status())
+        LotState::new(self.name(), price, self.status(), self.undefined())
     }
 
-    pub fn set_status(self, status: LotStatus) -> Self {
-        LotState::new(self.name(), self.price(), status as u8)
+    fn set_status(self, status: LotStatus) -> Self {
+        LotState::new(self.name(), self.price(), status as u8, self.undefined())
+    }
+
+    pub fn set_status_new(self) -> Self {
+        self.set_status(LotStatus::New)
+    }
+
+    pub fn set_status_rejected(self) -> Self {
+        self.set_status(LotStatus::Rejected)
+    }
+
+    pub fn set_status_verified(self) -> Self {
+        self.set_status(LotStatus::Verified)
+    }
+
+    pub fn set_status_executed(self) -> Self {
+        self.set_status(LotStatus::Executed)
+    }
+
+    pub fn set_status_closed(self) -> Self {
+        self.set_status(LotStatus::Closed)
+    }
+
+    pub fn set_undefined(self, undefined: bool) -> Self {
+        LotState::new(self.name(), self.price(), self.status(), undefined)
     }
 
     pub fn is_new(&self) -> bool {
         self.status() == (LotStatus::New as u8)
     }
 
-    pub fn is_verified(&self) -> bool {
-        self.status() == (LotStatus::Verified as u8)
+    pub fn is_rejected(&self) -> bool {
+        self.status() == (LotStatus::Rejected as u8)
     }
 
-    pub fn is_completed(&self) -> bool {
-        self.status() == (LotStatus::Completed as u8)
+    pub fn is_verified(&self) -> bool {
+        self.status() == (LotStatus::Verified as u8)
     }
 
     pub fn is_executed(&self) -> bool {
@@ -128,19 +159,11 @@ impl LotState {
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize, TryFromPrimitive)]
 #[serde(rename_all = "lowercase")]
 pub enum LotStatus {
-    New = 0,         // after creation
-    Rejected = 1,    // after internal verification (bad)
-    Verified = 2,    // after internal verification (good)
-    Completed = 3,   // after lot timeout
-    Executed = 4,    // after publishing bids
-    Closed = 5,      // after lot execution while object is updating
-    Undefined = 255, // something has been changed with objects while lot was opened
-}
-
-impl Default for LotStatus {
-    fn default() -> Self {
-        Self::Undefined
-    }
+    New = 0,      // after creation
+    Rejected = 1, // after internal verification (bad)
+    Verified = 2, // after internal verification (good)
+    Executed = 3, // after publishing bids
+    Closed = 4,   // after lot execution while object is updating
 }
 
 impl FromStr for LotStatus {

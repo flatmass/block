@@ -1,15 +1,18 @@
+use std::convert::TryFrom;
+use std::convert::TryInto;
+
+use chrono::{DateTime, Utc};
+use num_enum::TryFromPrimitive;
+use serde::{Deserialize, Serialize};
+
+use crate::error::Error;
+
 use super::classifier::Classifier;
 use super::conditions::ContractType;
 use super::location::Location;
 use super::member::MemberIdentity;
 use super::object::{ObjectIdentity, ObjectType};
 use super::time::{Specification, Term};
-use crate::error::Error;
-use chrono::{DateTime, Utc};
-use std::convert::TryInto;
-
-use num_enum::TryFromPrimitive;
-use std::convert::TryFrom;
 
 encoding_struct! {
     struct Ownership {
@@ -33,9 +36,6 @@ impl Ownership {
         if self.contract_type() == 0 {
             flags.set(Flag::OWNER, true);
         }
-        if !self.classifiers().is_empty() {
-            flags.set(Flag::CLASSIFIED, true);
-        }
         match Distribution::try_from(self.distribution()) {
             Ok(Distribution::Able) => flags.set(Flag::CAN_DISTRIBUTE, true),
             Ok(Distribution::WithWrittenPermission) => {
@@ -43,9 +43,6 @@ impl Ownership {
             }
             Ok(Distribution::Unable) => (),
             Err(_) => (),
-        }
-        if self.expiration_time().is_none() {
-            flags.set(Flag::NO_EXPIRATION_TIME, true);
         }
         Rights::new(
             flags.bits(),
@@ -107,13 +104,19 @@ impl Rights {
             .try_into()
             .map_err(|_| Error::internal_bad_struct("ObjectIdentity"))?
         {
-            Trademark | WellknownTrademark | AppellationOfOrigin | AppellationOfOriginRights => {
-                return Ok(1)
+            Trademark
+            | WellknownTrademark
+            | AppellationOfOrigin
+            | AppellationOfOriginRights
+            | GeographicalIndication => {
+                return Ok(1);
             }
-            Pharmaceutical => todo!(),
+            Program | Pharmaceutical => return Ok(0),
             Invention => chrono::Duration::days(20 * 365),
             UtilityModel => chrono::Duration::days(10 * 365),
             IndustrialModel => chrono::Duration::days(5 * 365),
+            Tims => chrono::Duration::days(10 * 365),
+            Database => chrono::Duration::days(15 * 365),
             Undefined => return Err(Error::internal_bad_struct("ObjectIdentity")),
         };
         let expiration_time = self
@@ -142,6 +145,26 @@ impl Rights {
         self.has(Flag::OWNER)
     }
 
+    pub fn is_expiration_time(&self) -> bool {
+        self.expiration_time().is_some()
+    }
+
+    pub fn is_classified(&self) -> bool {
+        !self.classifiers().is_empty()
+    }
+
+    pub fn is_exclusive(&self) -> bool {
+        self.has(Flag::EXCLUSIVE)
+    }
+
+    pub fn can_distribute(&self) -> bool {
+        self.has(Flag::CAN_DISTRIBUTE)
+    }
+
+    pub fn is_distribute_with_written_permission(&self) -> bool {
+        self.has(Flag::DISTRIBUTE_WITH_WRITTEN_PERMISSION)
+    }
+
     fn has(&self, f: Flag) -> bool {
         Flag::from_bits(self.flags())
             .unwrap_or(Flag::UNDEFINED)
@@ -153,10 +176,8 @@ bitflags! {
     struct Flag: u16 {
         const UNDEFINED = 0;
         const EXCLUSIVE = 1;
-        const CLASSIFIED = 4;
         const CAN_DISTRIBUTE = 8;
         const DISTRIBUTE_WITH_WRITTEN_PERMISSION = 16;
-        const NO_EXPIRATION_TIME = 32;
         const OWNER = 128;
     }
 }

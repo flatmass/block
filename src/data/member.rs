@@ -1,14 +1,17 @@
-use crate::error::Error;
-use blockp_core::crypto::{self, Hash};
 use std::convert::TryFrom;
 use std::fmt;
 use std::str::FromStr;
+
+use blockp_core::crypto::{self, Hash};
+use blockp_core::storage::StorageKey;
+
+use crate::error::Error;
 
 pub type MemberId = Hash;
 
 #[repr(u8)]
 #[derive(PartialEq)]
-enum MemberType {
+pub enum MemberType {
     Ogrn = 0,
     Ogrnip = 1,
     Snils = 2,
@@ -38,10 +41,28 @@ impl fmt::Display for MemberType {
 }
 
 encoding_struct! {
-    #[derive(Eq)]
+    #[derive(Eq, Hash)]
     struct MemberIdentity {
         class: u8,
         number: &str,
+    }
+}
+
+impl StorageKey for MemberIdentity {
+    /// 1 byte for 'class' + length of 'number'
+    fn size(&self) -> usize {
+        1 + self.number().len()
+    }
+
+    fn write(&self, buffer: &mut [u8]) {
+        self.class().write(&mut buffer[0..1]);
+        self.number().write(&mut buffer[1..]);
+    }
+
+    fn read(buffer: &[u8]) -> Self::Owned {
+        let class = buffer[0];
+        let number = unsafe { std::str::from_utf8_unchecked(&buffer[1..]) };
+        Self::new(class, number)
     }
 }
 
@@ -65,7 +86,11 @@ impl MemberIdentity {
         MemberType::try_from(self.class()) == Ok(MemberType::Snils)
     }
 
+    #[allow(unreachable_code)]
     pub fn is_valid(&self) -> bool {
+        #[cfg(feature = "disable_member_identity_validation")]
+        return true;
+
         match self.class() {
             0 => self.is_valid_ogrn(),
             1 => self.is_valid_ogrnip(),
@@ -150,5 +175,62 @@ impl fmt::Display for MemberIdentity {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let member_type = MemberType::try_from(self.class()).expect("Bad MemberType");
         write!(f, "{}::{}", member_type, self.number())
+    }
+}
+
+encoding_struct! {
+    #[derive(Eq, Hash)]
+    struct MemberEsiaToken {
+        token: &str,
+        oid: &str,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use blockp_core::storage::StorageKey;
+
+    use super::*;
+
+    #[test]
+    fn storage_key_member_identity() {
+        let members = [
+            MemberIdentity::from_str("ogrn::1053600591197").unwrap(),
+            MemberIdentity::new(0, ""),
+            MemberIdentity::new(0, "asdfjasdjfkj23904u9fjoadjfojf2940jufojadfjaspofjoaasdfjasdjfkj23904u9fjoadjfojf2940jufojadfjaspofjoaasdfjasdjfkj23904u9fjoadjfojf2940jufojadfjaspofjoaasdfjasdjfkj23904u9fjoadjfojf2940jufojadfjaspofjoaasdfjasdjfkj23904u9fjoadjfojf2940jufojadfjaspofjoaasdfjasdjfkj23904u9fjoadjfojf2940jufojadfjaspofjoa"),
+        ];
+
+        assert_round_trip_eq(&members);
+    }
+
+    fn assert_round_trip_eq<T>(values: &[T])
+    where
+        T: StorageKey + PartialEq<<T as ToOwned>::Owned> + Debug,
+        <T as ToOwned>::Owned: Debug,
+    {
+        for original_value in values.iter() {
+            let mut buffer = get_buffer(original_value);
+            original_value.write(&mut buffer);
+            let new_value = <T as StorageKey>::read(&buffer);
+            assert_eq!(*original_value, new_value);
+        }
+    }
+
+    fn get_buffer<T: StorageKey + ?Sized>(key: &T) -> Vec<u8> {
+        vec![0; key.size()]
+    }
+
+    #[test]
+    fn de_member_identity() {
+        let data = "snils::invalid member";
+        let member = MemberIdentity::from_str(data);
+
+        if cfg!(feature = "disable_member_identity_validation") {
+            member.unwrap();
+        } else {
+            println!("{}", member.unwrap_err());
+        };
     }
 }

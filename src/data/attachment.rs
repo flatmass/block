@@ -2,9 +2,12 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 use blockp_core::crypto::{self, Hash};
 
-use crate::data::strings::verify_filename;
+use crate::data::strings::{verify_filename, verify_str};
 use crate::error::{self, Error};
 
 pub type DocumentId = Hash;
@@ -24,31 +27,13 @@ encoding_struct! {
     }
 }
 
-impl fmt::Display for Sign {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_string())
-    }
-}
-
-encoding_struct! {
-    struct Attachment {
-        name: &str,
-        data: &[u8],
-        file_type: u8,
-    }
-}
-
-encoding_struct! {
-    struct SignedAttachment {
-        file: Attachment,
-        sign: Sign,
-    }
-}
-
 impl Sign {
     pub fn new_verified(blob: &[u8]) -> error::Result<Self> {
         let sign = Self::new(blob);
+
+        #[cfg(not(feature = "disable_sign_checks"))]
         sign.verify()?;
+
         Ok(sign)
     }
 
@@ -75,8 +60,10 @@ impl Sign {
         })
     }
 
-    pub fn verify_data(&self, file: &[u8]) -> error::Result<()> {
-        crypto::verify_detached_sign(file, self.data()).map_err(Into::into)
+    pub fn verify_data(&self, _file: &[u8]) -> error::Result<()> {
+        #[cfg(not(feature = "disable_sign_checks"))]
+        crypto::verify_detached_sign(_file, self.data()).map_err(Into::into);
+        Ok(())
     }
 
     #[allow(unused)]
@@ -92,24 +79,51 @@ impl FromStr for Sign {
     fn from_str(src: &str) -> error::Result<Self> {
         let blob = src.as_bytes();
         if let Ok(sign) = Self::decode_base64_detached_sign(blob) {
-            Ok(Self::new(&sign))
+            Self::new_verified(&sign)
         } else {
-            Ok(Self::new(blob))
+            Self::new_verified(blob)
         }
+    }
+}
+
+impl fmt::Display for Sign {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
+
+encoding_struct! {
+    struct AttachmentMetadata {
+        name: &str,
+        description: Option<String>,
+        file_type: u8,
+        timestamp: DateTime<Utc>,
+    }
+}
+
+encoding_struct! {
+    struct AttachmentMetadataWithHash {
+        metadata: AttachmentMetadata,
+        tx_hash: &Hash,
+    }
+}
+
+encoding_struct! {
+    struct Attachment {
+        metadata: AttachmentMetadata,
+        data: &[u8],
+        sign: Option<Sign>
+
     }
 }
 
 impl Attachment {
     pub fn verify(&self) -> Result<(), Error> {
-        verify_filename(self.name())
-    }
-}
-
-impl SignedAttachment {
-    pub fn verify(&self) -> Result<(), Error> {
-        self.file().verify()?;
-        // self.sign().verify()?;
-        // self.sign().verify_data(self.file().data())
+        verify_filename(self.metadata().name())?;
+        if let Some(data) = self.metadata().description() {
+            verify_str(data.as_ref(), "description")?;
+        };
+        self.sign().map(|sign| sign.verify()).transpose()?;
         Ok(())
     }
 }
@@ -121,6 +135,7 @@ pub enum AttachmentType {
     Other = 0,
     Deed = 1,
     Application = 2,
+    Notification = 3,
 }
 
 impl FromStr for AttachmentType {
@@ -139,8 +154,56 @@ impl TryFrom<u8> for AttachmentType {
             0 => AttachmentType::Other,
             1 => AttachmentType::Deed,
             2 => AttachmentType::Application,
+            3 => AttachmentType::Notification,
             _ => return Err(Error::unexpected_file_type()),
         };
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn de_attachment_type() {
+        let strings = vec!["other", "deed", "application", "notification"];
+        let att_tpye = vec![
+            AttachmentType::Other,
+            AttachmentType::Deed,
+            AttachmentType::Application,
+            AttachmentType::Notification,
+        ];
+        strings
+            .into_iter()
+            .zip(att_tpye)
+            .for_each(|(val, expected)| {
+                let received = AttachmentType::from_str(val).unwrap();
+                assert_eq!(received, expected);
+            });
+    }
+
+    #[test]
+    fn de_sign() {
+        let data = "invalid signature";
+        let sign = Sign::from_str(data);
+
+        if cfg!(feature = "disable_sign_checks") {
+            sign.unwrap();
+        } else {
+            sign.unwrap_err();
+        };
+    }
+
+    #[test]
+    fn display_sign() {
+        let data = "invalid signature";
+        let sign = Sign::from_str(data);
+
+        if cfg!(feature = "disable_sign_checks") {
+            sign.unwrap();
+        } else {
+            sign.unwrap_err();
+        };
     }
 }

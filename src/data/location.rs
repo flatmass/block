@@ -1,6 +1,9 @@
-use crate::error::{self, Error};
 use std::fmt::{self, Display};
 use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{self, Error};
 
 encoding_struct! {
     #[derive(Eq)]
@@ -45,11 +48,20 @@ impl Location {
         }
         Error::bad_location(&format!("can't match locations {:?} {:?}", self, other)).ok()
     }
+
+    pub fn is_valid(&self) -> bool {
+        match self.registry() {
+            1 => true,
+            2 => !self.desc().is_empty(),
+            128 => !self.desc().is_empty(),
+            _ => false,
+        }
+    }
 }
 
 impl Default for Location {
     fn default() -> Self {
-        // Russian Federation
+        // todo!("Must be 'all'")
         Self::new(LocationRegistry::Oktmo as u8, 0, "")
     }
 }

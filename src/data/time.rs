@@ -1,8 +1,11 @@
-use crate::error::Error;
-use chrono::{DateTime, Utc};
-use num_enum::TryFromPrimitive;
 use std::fmt;
 use std::str::FromStr;
+
+use chrono::{DateTime, Utc};
+use num_enum::TryFromPrimitive;
+use serde::{Deserialize, Serialize};
+
+use crate::error::Error;
 
 #[repr(u8)]
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, TryFromPrimitive)]

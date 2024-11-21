@@ -1,30 +1,32 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
 
 use chrono::{DateTime, Utc};
 use rand::{thread_rng, RngCore};
 
 use blockp_core::blockchain::{
-    Blockchain, ExecutionError, ExecutionResult, Transaction, TransactionSet,
+    Blockchain, ExecutionError, ExecutionResult, PreExecutionError, PreExecutionResult,
+    Transaction, TransactionSet,
 };
-use blockp_core::crypto::{self, get_cert_from_detached_sign, Certificate, Hash, PublicKey};
+use blockp_core::crypto::{get_cert_from_detached_sign, Certificate, Hash, PublicKey};
 use blockp_core::messages::RawMessage;
 use blockp_core::storage::{Fork, Snapshot};
 
-use crate::data::attachment::{Attachment, AttachmentType, DocumentId, Sign, SignedAttachment};
+use crate::data::attachment::{Attachment, AttachmentType, DocumentId, Sign};
 use crate::data::conditions::{Check, CheckKey, Conditions};
-use crate::data::contract::{Action, Contract, ContractId, ContractStatus, Tax};
+use crate::data::contract::{Action, BuyerSeller, Contract, ContractId, ContractStatus};
 use crate::data::cost::Cost;
-use crate::data::lot::{Bid, Lot, LotId, LotState, LotStatus};
-use crate::data::member::{MemberId, MemberIdentity};
+use crate::data::lot::{Bid, Lot, LotId, LotState, LotStatus, SaleType};
+use crate::data::member::MemberIdentity;
 use crate::data::object::ObjectIdentity;
 use crate::data::ownership::{Ownership, OwnershipUnstructured, Rights};
-use crate::data::request::Request;
+#[cfg(feature = "internal_api")]
+use crate::data::payment::PaymentStatus;
+use crate::data::payment::{Calculation, PaymentDetail, PaymentDetailsWrapper};
 use crate::data::strings::verify_node_name;
 use crate::error::{self, Error};
 use crate::schema::Schema;
-use crate::util::contains_diplicates;
+use crate::EsiaAuth;
 
 impl From<Error> for ExecutionError {
     fn from(err: Error) -> Self {
@@ -32,31 +34,14 @@ impl From<Error> for ExecutionError {
     }
 }
 
-pub fn add_object_request(
-    requestor: MemberIdentity,
-    object: ObjectIdentity,
-    cert: &Certificate,
-) -> Box<dyn Transaction> {
-    AddObjectRequest::new(
-        salt(),
-        TxType::AddObjectRequest as u8,
-        requestor,
-        object,
-        cert,
-    )
-    .into()
-}
-
-pub fn add_object_group_request(
-    requestor: MemberIdentity,
-    cert: &Certificate,
-) -> Box<dyn Transaction> {
-    AddObjectGroupRequest::new(salt(), TxType::AddObjectGroupRequest as u8, requestor, cert).into()
+impl From<Error> for PreExecutionError {
+    fn from(err: Error) -> Self {
+        PreExecutionError::with_description(err.code(), err.info())
+    }
 }
 
 #[cfg(feature = "internal_api")]
 pub fn add_object(
-    owner: MemberIdentity,
     object: ObjectIdentity,
     data: &str,
     ownership: Vec<Ownership>,
@@ -66,7 +51,6 @@ pub fn add_object(
     AddObject::new(
         salt(),
         TxType::AddObject as u8,
-        owner,
         object,
         data,
         ownership,
@@ -78,7 +62,6 @@ pub fn add_object(
 
 #[cfg(feature = "internal_api")]
 pub fn update_object(
-    owner: MemberIdentity,
     object: ObjectIdentity,
     data: &str,
     ownership: Vec<Ownership>,
@@ -88,7 +71,6 @@ pub fn update_object(
     UpdateObject::new(
         salt(),
         TxType::UpdateObject as u8,
-        owner,
         object,
         data,
         ownership,
@@ -98,58 +80,58 @@ pub fn update_object(
     .into()
 }
 
-pub fn attach_file(
-    requestor: MemberIdentity,
-    file: Attachment,
-    cert: &Certificate,
-    members: Vec<MemberIdentity>,
-    share: Vec<PublicKey>,
-) -> Box<dyn Transaction> {
-    AttachFile::new(
-        salt(),
-        TxType::AttachFile as u8,
-        requestor,
-        file,
-        members,
-        share,
-        cert,
-    )
-    .into()
-}
+// pub fn attach_file(
+//     requestor: MemberIdentity,
+//     file: Attachment,
+//     cert: &Certificate,
+//     members: Vec<MemberIdentity>,
+//     share: Vec<PublicKey>,
+// ) -> Box<dyn Transaction> {
+//     AttachFile::new(
+//         salt(),
+//         TxType::AttachFile as u8,
+//         requestor,
+//         file,
+//         members,
+//         share,
+//         cert,
+//     )
+//     .into()
+// }
 
-pub fn delete_files(
-    requestor: MemberIdentity,
-    doc_hashes: &[DocumentId],
-    cert: &Certificate,
-) -> Box<dyn Transaction> {
-    DeleteFiles::new(
-        salt(),
-        TxType::DeleteFiles as u8,
-        requestor,
-        doc_hashes,
-        cert,
-    )
-    .into()
-}
+// pub fn delete_files(
+//     requestor: MemberIdentity,
+//     doc_hashes: &[DocumentId],
+//     cert: &Certificate,
+// ) -> Box<dyn Transaction> {
+//     DeleteFiles::new(
+//         salt(),
+//         TxType::DeleteFiles as u8,
+//         requestor,
+//         doc_hashes,
+//         cert,
+//     )
+//     .into()
+// }
 
-pub fn add_attachment_sign(
-    requestor: MemberIdentity,
-    doc_tx_hash: &Hash,
-    sign: Sign,
-    cert: &Certificate,
-    share: Vec<PublicKey>,
-) -> Box<dyn Transaction> {
-    AddAttachmentSign::new(
-        salt(),
-        TxType::AddAttachmentSign as u8,
-        requestor,
-        doc_tx_hash,
-        sign,
-        share,
-        cert,
-    )
-    .into()
-}
+// pub fn add_attachment_sign(
+//     requestor: MemberIdentity,
+//     doc_tx_hash: &Hash,
+//     sign: Sign,
+//     cert: &Certificate,
+//     share: Vec<PublicKey>,
+// ) -> Box<dyn Transaction> {
+//     AddAttachmentSign::new(
+//         salt(),
+//         TxType::AddAttachmentSign as u8,
+//         requestor,
+//         doc_tx_hash,
+//         sign,
+//         share,
+//         cert,
+//     )
+//     .into()
+// }
 
 #[cfg(feature = "internal_api")]
 pub fn add_participant(
@@ -182,7 +164,7 @@ pub fn close_lot(
     lot_id: &LotId,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
-    CloseLot::new(0, TxType::CloseLot as u8, requestor, lot_id, cert).into()
+    CloseLot::new(salt(), TxType::CloseLot as u8, requestor, lot_id, cert).into()
 }
 
 #[cfg(feature = "internal_api")]
@@ -199,6 +181,11 @@ pub fn edit_lot_status(
         cert,
     )
     .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn lot_undefined(lot_id: &LotId, admit: bool, cert: &Certificate) -> Box<dyn Transaction> {
+    LotUndefined::new(salt(), TxType::LotUndefined as u8, lot_id, admit, cert).into()
 }
 
 #[cfg(feature = "internal_api")]
@@ -242,6 +229,7 @@ pub fn acquire_lot(
 
 pub fn purchase_offer(
     requestor: MemberIdentity,
+    buyer: MemberIdentity,
     rightholder: MemberIdentity,
     price: Cost,
     conditions: Conditions,
@@ -252,6 +240,7 @@ pub fn purchase_offer(
         salt(),
         TxType::PurchaseOffer as u8,
         requestor,
+        buyer,
         rightholder,
         price.into(),
         conditions,
@@ -261,35 +250,9 @@ pub fn purchase_offer(
     .into()
 }
 
-pub fn add_tax(
-    contract_tx_hash: ContractId,
-    requestor: MemberIdentity,
-    number: String,
-    payment_date: DateTime<Utc>,
-    amount: Cost,
-    share: Vec<PublicKey>,
-    cert: &Certificate,
-) -> Box<dyn Transaction> {
-    AddTaxInfo::new(
-        0,
-        TxType::AddTaxInfo as u8,
-        &contract_tx_hash,
-        requestor,
-        number.as_str(),
-        payment_date,
-        amount.into(),
-        share,
-        cert,
-    )
-    .into()
-}
-
 #[cfg(feature = "internal_api")]
 pub fn draft_contract(
     contract_tx_hash: &ContractId,
-    doc_tx_hashes: &[DocumentId],
-    deed_tx_hash: &DocumentId,
-    application_tx_hash: &DocumentId,
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
@@ -297,9 +260,6 @@ pub fn draft_contract(
         0,
         TxType::DraftContract as u8,
         contract_tx_hash,
-        doc_tx_hashes,
-        deed_tx_hash,
-        application_tx_hash,
         share,
         cert,
     )
@@ -330,7 +290,6 @@ pub fn confirm_contract(
     contract_tx_hash: &ContractId,
     deed_tx_hash: &DocumentId,
     application_tx_hash: &DocumentId,
-    doc_tx_hashes: &[DocumentId],
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
@@ -341,7 +300,6 @@ pub fn confirm_contract(
         contract_tx_hash,
         deed_tx_hash,
         application_tx_hash,
-        doc_tx_hashes,
         share,
         cert,
     )
@@ -353,6 +311,8 @@ pub fn update_contract(
     requestor: MemberIdentity,
     price: Cost,
     conditions: Conditions,
+    contract_correspondence: Option<String>,
+    objects_correspondence: Option<String>,
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
@@ -363,23 +323,43 @@ pub fn update_contract(
         requestor,
         price.into(),
         conditions,
+        contract_correspondence,
+        objects_correspondence,
         share,
         cert,
     )
     .into()
 }
 
-pub fn attach_contract_file(
+pub fn attach_contract_other_file(
     requestor: MemberIdentity,
     contract_tx_hash: &ContractId,
     file: Attachment,
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
-    AttachContractFile::new(
-        salt(),
-        TxType::AttachContractFile as u8,
+    AttachContractOtherFile::new(
+        0,
+        TxType::AttachContractOtherFile as u8,
         requestor,
+        contract_tx_hash,
+        file,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn attach_contract_main_file(
+    contract_tx_hash: &ContractId,
+    file: Attachment,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    AttachContractMainFile::new(
+        0,
+        TxType::AttachContractMainFile as u8,
         contract_tx_hash,
         file,
         share,
@@ -410,7 +390,7 @@ pub fn delete_contract_files(
 #[cfg(feature = "internal_api")]
 pub fn approve_contract(
     contract_tx_hash: &ContractId,
-    signed_file: SignedAttachment,
+    attachment: Option<Attachment>,
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
@@ -418,7 +398,7 @@ pub fn approve_contract(
         0,
         TxType::ApproveContract as u8,
         contract_tx_hash,
-        signed_file,
+        attachment,
         share,
         cert,
     )
@@ -429,7 +409,7 @@ pub fn approve_contract(
 pub fn reject_contract(
     contract_tx_hash: &ContractId,
     reason: &str,
-    signed_file: Option<SignedAttachment>,
+    attachment: Option<Attachment>,
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
@@ -438,7 +418,7 @@ pub fn reject_contract(
         TxType::RejectContract as u8,
         contract_tx_hash,
         reason,
-        signed_file,
+        attachment,
         share,
         cert,
     )
@@ -487,7 +467,7 @@ pub fn register_contract(
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
     RegisterContract::new(
-        0,
+        salt(),
         TxType::RegisterContract as u8,
         contract_tx_hash,
         share,
@@ -503,7 +483,7 @@ pub fn await_user_action_contract(
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
     AwaitUserActionContract::new(
-        0,
+        salt(),
         TxType::AwaitUserActionContract as u8,
         contract_tx_hash,
         share,
@@ -513,18 +493,42 @@ pub fn await_user_action_contract(
 }
 
 #[cfg(feature = "internal_api")]
-pub fn submit_checks(
+pub fn contract_submit_checks(
     contract_tx_hash: &ContractId,
     checks: Vec<Check>,
+    is_undef: bool,
+    reference_number: Option<String>,
     share: Vec<PublicKey>,
     cert: &Certificate,
 ) -> Box<dyn Transaction> {
-    SubmitChecks::new(
+    ContractSubmitChecks::new(
         0,
-        TxType::SubmitChecks as u8,
+        TxType::ContractSubmitChecks as u8,
         contract_tx_hash,
         checks,
+        is_undef,
+        reference_number,
         share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn lot_submit_checks(
+    contract_tx_hash: &ContractId,
+    checks: Vec<Check>,
+    is_undef: bool,
+    reference_number: Option<String>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    LotSubmitChecks::new(
+        0,
+        TxType::LotSubmitChecks as u8,
+        contract_tx_hash,
+        checks,
+        is_undef,
+        reference_number,
         cert,
     )
     .into()
@@ -546,6 +550,170 @@ pub fn contract_reference_number(
         cert,
     )
     .into()
+}
+
+pub fn tax_request(
+    requestor: MemberIdentity,
+    contract_tx_hash: &ContractId,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    TaxRequest::new(
+        salt(),
+        TxType::TaxRequest as u8,
+        requestor,
+        contract_tx_hash,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn tax_contract_calculation(
+    contract_tx_hash: &ContractId,
+    calculations: Vec<Calculation>,
+    reference_number: Option<String>,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    TaxContractCalculation::new(
+        salt(),
+        TxType::TaxContractCalculation as u8,
+        contract_tx_hash,
+        calculations,
+        reference_number,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn tax_lot_calculation(
+    lot_tx_hash: &LotId,
+    calculations: Vec<Calculation>,
+    reference_number: Option<String>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    TaxLotCalculation::new(
+        salt(),
+        TxType::TaxLotCalculation as u8,
+        lot_tx_hash,
+        calculations,
+        reference_number,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn tax_with_payment_details(
+    contract_tx_hash: &ContractId,
+    payment_details: Vec<PaymentDetail>,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    TaxWithPaymentDetails::new(
+        salt(),
+        TxType::TaxWithPaymentDetails as u8,
+        contract_tx_hash,
+        payment_details,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn tax_status(
+    contract_tx_hash: &ContractId,
+    payment_id: &str,
+    status: PaymentStatus,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    TaxStatus::new(
+        0,
+        TxType::TaxStatus as u8,
+        contract_tx_hash,
+        payment_id,
+        status as u8,
+        share,
+        cert,
+    )
+    .into()
+}
+
+pub fn contract_confirm_create(
+    requestor_id: MemberIdentity,
+    contract_id: &ContractId,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    ContractConfirmCreate::new(
+        salt(),
+        TxType::ContractConfirmCreate as u8,
+        requestor_id,
+        contract_id,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn contract_unconfirm_create(
+    member_id: MemberIdentity,
+    contract_id: &ContractId,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    ContractUnconfirmCreate::new(
+        salt(),
+        TxType::ContractUnconfirmCreate as u8,
+        member_id,
+        contract_id,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn contract_undefined(
+    contract_id: &ContractId,
+    admit: bool,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    ContractUndefined::new(
+        salt(),
+        TxType::ContractUndefined as u8,
+        contract_id,
+        admit,
+        share,
+        cert,
+    )
+    .into()
+}
+
+#[cfg(feature = "internal_api")]
+pub fn contract_new(
+    contract_id: &ContractId,
+    share: Vec<PublicKey>,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    ContractNew::new(salt(), TxType::ContractNew as u8, contract_id, share, cert).into()
+}
+
+pub fn member_token(
+    member: MemberIdentity,
+    token: &str,
+    oid: &str,
+    cert: &Certificate,
+) -> Box<dyn Transaction> {
+    MemberToken::new(0, TxType::MemberToken as u8, member, token, oid, cert).into()
 }
 
 fn convert_tx<T: AsRef<dyn Snapshot>>(
@@ -581,16 +749,20 @@ pub fn get_private_tx<T: AsRef<dyn Snapshot>>(
     convert_tx::<T>(pub_tx_hash, priv_tx_raw)
 }
 
-fn _member_matches_sign(member: &MemberIdentity, sign: &Sign) -> Result<(), Error> {
+#[allow(unreachable_code)]
+fn member_matches_sign(_member: &MemberIdentity, _sign: &Sign) -> Result<(), Error> {
     const OGRN_OID: &'static str = "1.2.643.100.1";
     const OGRNIP_OID: &'static str = "1.2.643.100.5";
     const SNILS_OID: &'static str = "1.2.643.100.3";
 
-    let certificate = get_cert_from_detached_sign(sign.data())
+    // Look up https://aj.srvdev.ru/browse/FIPSOP-1007
+    return Ok(());
+
+    let certificate = get_cert_from_detached_sign(_sign.data())
         .map_err(|_| Error::bad_signature("unable to decode"))?
         .ok_or_else(|| Error::bad_signature("unable to extract certificate"))?;
 
-    let certificate_member = match member.class() {
+    let certificate_member = match _member.class() {
         0 => certificate
             .get_oid(OGRN_OID)
             .expect("Certificate::get_oid argument contains internal NULL byte")
@@ -621,7 +793,7 @@ fn _member_matches_sign(member: &MemberIdentity, sign: &Sign) -> Result<(), Erro
         _ => panic!("`transactions::member_matches_sign` called with invalid member"),
     }?;
 
-    if certificate_member == member.number() {
+    if certificate_member == _member.number() {
         Ok(())
     } else {
         Err(Error::bad_signature("signature does not match member"))
@@ -642,13 +814,13 @@ fn salt() -> u64 {
 #[repr(u8)]
 #[allow(unused)]
 enum TxType {
-    AddObjectRequest = 1,
-    AddObjectGroupRequest = 2,
+    // AddObjectRequest = 1,
+    // AddObjectGroupRequest = 2,
     AddObject = 3,
     UpdateObject = 4,
-    AttachFile = 5,
-    DeleteFiles = 6,
-    AddAttachmentSign = 7,
+    // AttachFile = 5,
+    // DeleteFiles = 6,
+    // AddAttachmentSign = 7,
     AddParticipant = 11,
     OpenLot = 12,
     CloseLot = 13,
@@ -661,7 +833,7 @@ enum TxType {
     DraftContract = 20,
     RefuseContract = 21,
     ConfirmContract = 22,
-    AttachContractFile = 23,
+    AttachContractOtherFile = 23,
     DeleteContractFiles = 24,
     ApproveContract = 25,
     RejectContract = 26,
@@ -669,30 +841,31 @@ enum TxType {
     RegisterContract = 28,
     AwaitUserActionContract = 29,
     SignContract = 30,
-    SubmitChecks = 31,
-    AddTaxInfo = 32,
+    ContractSubmitChecks = 31,
+    // AddTaxInfo = 32,
     ContractReferenceNumber = 33,
     ExtendLotPeriod = 34,
+    LotUndefined = 35,
+    TaxRequest = 36,
+    TaxLotCalculation = 37,
+    TaxContractCalculation = 38,
+    TaxWithPaymentDetails = 39,
+    TaxStatus = 40,
+    LotSubmitChecks = 41,
+    ContractUndefined = 42,
+    MemberToken = 43,
+    ContractConfirmCreate = 44,
+    ContractUnconfirmCreate = 45,
+    ContractNew = 46,
+    AttachContractMainFile = 47,
 }
 
 transactions! {
     pub OwnershipTransactions {
         const SERVICE_ID = crate::service::SERVICE_ID;
 
-        struct AddObjectRequest {
-            _type: u8,
-            requestor: MemberIdentity,
-            object: ObjectIdentity,
-        }
-
-        struct AddObjectGroupRequest {
-            _type: u8,
-            requestor: MemberIdentity,
-        }
-
         struct AddObject {
             _type: u8,
-            owner: MemberIdentity,
             object: ObjectIdentity,
             data: &str,
             ownership: Vec<Ownership>,
@@ -701,34 +874,33 @@ transactions! {
 
         struct UpdateObject {
             _type: u8,
-            owner: MemberIdentity,
             object: ObjectIdentity,
             data: &str,
             ownership: Vec<Ownership>,
             unstructured_ownership: Vec<OwnershipUnstructured>,
         }
 
-        struct AttachFile {
-            _type: u8,
-            requestor: MemberIdentity,
-            file: Attachment,
-            members: Vec<MemberIdentity>,
-            share: Vec<PublicKey>,
-        }
+        // struct AttachFile {
+        //     _type: u8,
+        //     requestor: MemberIdentity,
+        //     file: Attachment,
+        //     members: Vec<MemberIdentity>,
+        //     share: Vec<PublicKey>,
+        // }
 
-        struct DeleteFiles {
-            _type: u8,
-            requestor: MemberIdentity,
-            doc_tx_hashes: &[DocumentId],
-        }
+        // struct DeleteFiles {
+        //     _type: u8,
+        //     requestor: MemberIdentity,
+        //     doc_tx_hashes: &[DocumentId],
+        // }
 
-        struct AddAttachmentSign {
-            _type: u8,
-            requestor: MemberIdentity,
-            doc_tx_hash: &DocumentId,
-            sign: Sign,
-            share: Vec<PublicKey>,
-        }
+        // struct AddAttachmentSign {
+        //     _type: u8,
+        //     requestor: MemberIdentity,
+        //     doc_tx_hash: &DocumentId,
+        //     sign: Sign,
+        //     share: Vec<PublicKey>,
+        // }
 
         struct AddParticipant {
             _type: u8,
@@ -790,6 +962,7 @@ transactions! {
         struct PurchaseOffer {
             _type: u8,
             requestor: MemberIdentity,
+            buyer: MemberIdentity,
             rightholder: MemberIdentity,
             price: u64,
             conditions: Conditions,
@@ -799,9 +972,6 @@ transactions! {
         struct DraftContract {
             _type: u8,
             contract_tx_hash: &ContractId,
-            doc_tx_hashes: &[DocumentId],
-            deed_tx_hash: &DocumentId,
-            application_tx_hash: &DocumentId,
             share: Vec<PublicKey>,
         }
 
@@ -819,13 +989,19 @@ transactions! {
             contract_tx_hash: &ContractId,
             deed_tx_hash: &DocumentId,
             application_tx_hash: &DocumentId,
-            doc_tx_hashes: &[DocumentId],
             share: Vec<PublicKey>,
         }
 
-        struct AttachContractFile {
+        struct AttachContractOtherFile {
             _type: u8,
             requestor: MemberIdentity,
+            contract_tx_hash: &ContractId,
+            file: Attachment,
+            share: Vec<PublicKey>,
+        }
+
+        struct AttachContractMainFile {
+            _type: u8,
             contract_tx_hash: &ContractId,
             file: Attachment,
             share: Vec<PublicKey>,
@@ -842,7 +1018,7 @@ transactions! {
         struct ApproveContract {
             _type: u8,
             contract_tx_hash: &ContractId,
-            signed_file: SignedAttachment,
+            attachment: Option<Attachment>,
             share: Vec<PublicKey>,
         }
 
@@ -850,7 +1026,7 @@ transactions! {
             _type: u8,
             contract_tx_hash: &ContractId,
             reason: &str,
-            signed_file: Option<SignedAttachment>,
+            attachment: Option<Attachment>,
             share: Vec<PublicKey>,
         }
 
@@ -860,6 +1036,8 @@ transactions! {
             requestor: MemberIdentity,
             price: u64,
             conditions: Conditions,
+            contract_correspondence: Option<String>,
+            objects_correspondence: Option<String>,
             share: Vec<PublicKey>,
         }
 
@@ -884,20 +1062,12 @@ transactions! {
             share: Vec<PublicKey>,
         }
 
-        struct SubmitChecks {
+        struct ContractSubmitChecks {
             _type: u8,
             contract_tx_hash: &ContractId,
             checks: Vec<Check>,
-            share: Vec<PublicKey>,
-        }
-
-        struct AddTaxInfo {
-            _type: u8,
-            contract_tx_hash: &ContractId,
-            requestor: MemberIdentity,
-            number: &str,
-            payment_date: DateTime<Utc>,
-            amount: u64,
+            is_undef: bool,
+            reference_number: Option<String>,
             share: Vec<PublicKey>,
         }
 
@@ -907,126 +1077,187 @@ transactions! {
             reference_number: &str,
             share: Vec<PublicKey>,
         }
-    }
-}
 
-impl Transaction for AddAttachmentSign {
-    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.requestor().is_valid() //&& self.sign().verify().is_ok()
-    }
-
-    fn participants(&self) -> Vec<PublicKey> {
-        self.share()
-    }
-
-    fn execute(&self, fork: &mut Fork, _hash: &Hash, _: &PublicKey) -> ExecutionResult {
-        let mut schema = Schema::new(fork);
-        let doc_tx_hash = self.doc_tx_hash();
-        let uid = &self.requestor().id();
-
-        if !schema.attachments(uid).contains(doc_tx_hash) {
-            Error::no_attachment(doc_tx_hash).ok()?
+        struct LotUndefined {
+            _type: u8,
+            lot_tx_hash: &LotId,
+            admit: bool
         }
 
-        // let attachment: Attachment = {
-        //     let doc_tx = get_private_tx(&schema, doc_tx_hash)?;
-        //     match doc_tx {
-        //         OwnershipTransactions::AttachFile(tx) if tx.requestor().id() == *uid => {
-        //             Ok(tx.file())
-        //         }
-        //         OwnershipTransactions::AttachContractFile(tx) => Ok(tx.file()),
-        //         _ => Error::unexpected_tx_type(doc_tx_hash).ok(),
-        //     }
-        // }?;
-        // let doc_data = attachment.data();
-        let sign = self.sign();
-        // member_matches_sign(&self.requestor(), &sign)?;
-        // sign.verify_data(doc_data)?;
-
-        Ok(schema.add_attachment_sign(doc_tx_hash, uid, sign))
-    }
-}
-
-impl Transaction for AttachFile {
-    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.requestor().is_valid()
-            && self.file().verify().is_ok()
-            && !contains_diplicates(self.members())
-            && !contains_diplicates(self.share())
-    }
-
-    fn participants(&self) -> Vec<PublicKey> {
-        self.share()
-    }
-
-    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
-        let mut schema = Schema::new(fork);
-        let data_hash = crypto::hash(self.file().data());
-        schema.attach_file(&self.requestor().id(), tx_hash, data_hash);
-
-        for p in self.members().iter() {
-            schema.attach_file(&p.id(), tx_hash, data_hash);
-        }
-        Ok(())
-    }
-}
-
-impl Transaction for DeleteFiles {
-    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.requestor().is_valid()
-    }
-
-    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
-        let mut schema = Schema::new(fork);
-        let uid = &self.requestor().id();
-
-        let docs = self.doc_tx_hashes();
-
-        for doc_tx_hash in docs {
-            if !schema.attachments(uid).contains(doc_tx_hash) {
-                Error::no_attachment(doc_tx_hash).ok()?
-            }
-            let doc_tx = get_private_tx(&schema, doc_tx_hash)?;
-            match doc_tx {
-                OwnershipTransactions::AttachFile(tx) if tx.requestor().id() == *uid => Ok(()),
-                _ => Error::unexpected_tx_type(tx_hash).ok(),
-            }?;
-
-            schema.remove_attachment_sign(&uid, doc_tx_hash);
-            schema.remove_file(&uid, doc_tx_hash);
+        struct TaxRequest {
+            _type: u8,
+            requestor: MemberIdentity,
+            contract_tx_hash: &ContractId,
+            share: Vec<PublicKey>,
         }
 
-        Ok(())
+        struct TaxLotCalculation {
+            _type: u8,
+            lot_tx_hash: &LotId,
+            calculations: Vec<Calculation>,
+            reference_number: Option<String>
+        }
+
+        struct TaxContractCalculation {
+            _type: u8,
+            contract_tx_hash: &ContractId,
+            calculations: Vec<Calculation>,
+            reference_number: Option<String>,
+            share: Vec<PublicKey>,
+        }
+
+        struct TaxWithPaymentDetails {
+            _type: u8,
+            contract_tx_hash: &ContractId,
+            payment_details: Vec<PaymentDetail>,
+            share: Vec<PublicKey>,
+        }
+
+        struct TaxStatus {
+            _type: u8,
+            contract_tx_hash: &ContractId,
+            payment_id: &str,
+            status: u8,
+            share: Vec<PublicKey>,
+        }
+
+        struct LotSubmitChecks {
+            _type: u8,
+            lot_tx_hash: &LotId,
+            checks: Vec<Check>,
+            is_undef: bool,
+            reference_number: Option<String>
+        }
+
+        struct ContractUndefined {
+            _type: u8,
+            contract_tx_hash: &ContractId,
+            admit: bool,
+            share: Vec<PublicKey>,
+        }
+
+        struct MemberToken {
+            _type: u8,
+            member: MemberIdentity,
+            token: &str,
+            oid: &str,
+        }
+
+        struct ContractConfirmCreate {
+            _type: u8,
+            requestor: MemberIdentity,
+            contract_tx_hash: &ContractId,
+            share: Vec<PublicKey>,
+        }
+
+        struct ContractUnconfirmCreate {
+            _type: u8,
+            member: MemberIdentity,
+            contract_tx_hash: &ContractId,
+            share: Vec<PublicKey>,
+        }
+
+        struct ContractNew {
+            _type: u8,
+            contract_tx_hash: &ContractId,
+            share: Vec<PublicKey>,
+        }
     }
 }
 
-impl Transaction for AddObjectRequest {
-    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.requestor().is_valid() && self.object().is_valid()
-    }
+// impl Transaction for AddAttachmentSign {
+//     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+//         self.requestor().is_valid() && self.sign().verify().is_ok()
+//     }
+//
+//     fn participants(&self) -> Vec<PublicKey> {
+//         self.share()
+//     }
+//
+//     fn execute(&self, fork: &mut Fork, _hash: &Hash, _: &PublicKey) -> ExecutionResult {
+//         let mut schema = Schema::new(fork);
+//         let doc_tx_hash = self.doc_tx_hash();
+//         let uid = &self.requestor().id();
+//
+//         if !schema.attachments(uid).contains(doc_tx_hash) {
+//             Error::no_attachment(doc_tx_hash).ok()?
+//         }
+//
+//         let attachment: Attachment = {
+//             let doc_tx = get_private_tx(&schema, doc_tx_hash)?;
+//             match doc_tx {
+//                 // OwnershipTransactions::AttachFile(tx) if tx.requestor().id() == *uid => {
+//                 //     Ok(tx.file())
+//                 // }
+//                 OwnershipTransactions::AttachContractFile(tx) => Ok(tx.file()),
+//                 _ => Error::unexpected_tx_type(doc_tx_hash).ok(),
+//             }
+//         }?;
+//         let doc_data = attachment.data();
+//         let sign = self.sign();
+//         member_matches_sign(&self.requestor(), &sign)?;
+//         sign.verify_data(doc_data)?;
+//
+//         Ok(schema.add_attachment_sign(doc_tx_hash, uid, sign))
+//     }
+// }
 
-    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
-        let mut schema = Schema::new(fork);
-        schema.put_request(&self.requestor().id(), Request::add_object(tx_hash));
-        Ok(())
-    }
-}
+// impl Transaction for AttachFile {
+//     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+//         self.requestor().is_valid()
+//             && self.file().verify().is_ok()
+//             && !contains_diplicates(self.members())
+//             && !contains_diplicates(self.share())
+//     }
+//
+//     fn participants(&self) -> Vec<PublicKey> {
+//         self.share()
+//     }
+//
+//     fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
+//         let mut schema = Schema::new(fork);
+//         let data_hash = crypto::hash(self.file().data());
+//         schema.attach_file(&self.requestor().id(), tx_hash, data_hash);
+//
+//         for p in self.members().iter() {
+//             schema.attach_file(&p.id(), tx_hash, data_hash);
+//         }
+//         Ok(())
+//     }
+// }
 
-impl Transaction for AddObjectGroupRequest {
-    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.requestor().is_valid()
-    }
-
-    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
-        let mut schema = Schema::new(fork);
-        schema.put_request(&self.requestor().id(), Request::add_object_group(tx_hash));
-        Ok(())
-    }
-}
+// impl Transaction for DeleteFiles {
+//     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+//         self.requestor().is_valid()
+//     }
+//
+//     fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
+//         let mut schema = Schema::new(fork);
+//         let uid = &self.requestor().id();
+//
+//         let docs = self.doc_tx_hashes();
+//
+//         for doc_tx_hash in docs {
+//             if !schema.attachments(uid).contains(doc_tx_hash) {
+//                 Error::no_attachment(doc_tx_hash).ok()?
+//             }
+//             let doc_tx = get_private_tx(&schema, doc_tx_hash)?;
+//             match doc_tx {
+//                 OwnershipTransactions::AttachFile(tx) if tx.requestor().id() == *uid => Ok(()),
+//                 _ => Error::unexpected_tx_type(tx_hash).ok(),
+//             }?;
+//
+//             schema.remove_attachment_sign(&uid, doc_tx_hash);
+//             schema.remove_file(&uid, doc_tx_hash);
+//         }
+//
+//         Ok(())
+//     }
+// }
 
 impl Transaction for AddObject {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.owner().is_valid() && self.object().is_valid()
+        self.object().is_valid()
     }
 
     fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
@@ -1036,24 +1267,26 @@ impl Transaction for AddObject {
         if schema.objects().contains(obj_id) {
             Error::duplicate_object(&object).ok()?
         }
-        let owner = self.owner();
-        let owner_id = &owner.id();
-        let mut rights = self
+
+        let rights = self
             .ownership()
-            .iter()
-            .map(|own| (own.rightholder().id(), own.rights()))
-            .collect::<HashMap<MemberId, Rights>>();
-        rights.insert(*owner_id, Rights::new_owned());
+            .into_iter()
+            .map(|own| (own.rightholder(), own.rights()))
+            .collect::<HashMap<MemberIdentity, Rights>>();
+
         schema.update_rights(&object, rights);
         schema.update_unstructured_ownership(&object, self.unstructured_ownership());
-        schema.update_object_data(obj_id, self.data(), tx_hash);
+        schema.invalidate_published_lots(obj_id);
+        schema.invalidate_published_contracts(obj_id);
+        schema.update_object_data(obj_id, self.data(), tx_hash, object);
+
         Ok(())
     }
 }
 
 impl Transaction for UpdateObject {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.owner().is_valid() && self.object().is_valid()
+        self.object().is_valid()
     }
 
     fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _: &PublicKey) -> ExecutionResult {
@@ -1063,22 +1296,18 @@ impl Transaction for UpdateObject {
         if !schema.objects().contains(obj_id) {
             Error::no_object(&object).ok()?
         }
-        let owner_id = &self.owner().id();
-        let old_owner_id = &schema
-            .find_owner(obj_id)
-            .ok_or_else(|| Error::no_owner(&object))?;
-        if !schema.unlock_object(old_owner_id, obj_id) {
-            Error::locked_object(&object).ok()?
-        }
-        let mut rights = self
+
+        let rights = self
             .ownership()
             .iter()
-            .map(|own| (own.rightholder().id(), own.rights()))
-            .collect::<HashMap<MemberId, Rights>>();
-        rights.insert(*owner_id, Rights::new_owned());
+            .map(|own| (own.rightholder(), own.rights()))
+            .collect::<HashMap<MemberIdentity, Rights>>();
+
         schema.update_rights(&object, rights);
         schema.update_unstructured_ownership(&object, self.unstructured_ownership());
-        schema.update_object_data(obj_id, self.data(), tx_hash);
+        schema.invalidate_published_lots(obj_id);
+        schema.invalidate_published_contracts(obj_id);
+        schema.update_object_data(obj_id, self.data(), tx_hash, object);
         Ok(())
     }
 }
@@ -1134,7 +1363,28 @@ impl Transaction for OpenLot {
         }
         schema.add_member_lot(uid, lot_id);
         schema.set_lot_state(lot_id, LotState::open(lot.name(), lot.price()));
-        schema.add_lot(lot_id, lot, conditions);
+        schema.add_lot(**lot_id, lot, conditions);
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
         Ok(())
     }
 }
@@ -1161,24 +1411,41 @@ impl Transaction for CloseLot {
             .lot_states()
             .get(lot_id)
             .ok_or_else(|| Error::bad_state("lot state wasn't found"))?;
-        if state.is_completed() {
-            Error::bad_state("lot is still in-progress").ok()?
-        }
-        schema.remove_lot_state(lot_id);
-        let lot_tx = match get_transaction(&schema, lot_id)? {
-            OwnershipTransactions::OpenLot(tx) => Ok(tx),
-            _ => Error::unexpected_tx_type(lot_id).ok(),
-        }?;
-        let member_id = &lot_tx.requestor().id();
-        if !schema.member_lots(member_id).contains(lot_id) {
+        // schema.remove_lot_state(lot_id);
+        let requestor_id = &self.requestor().id();
+        if !schema.member_lots(requestor_id).contains(lot_id) {
             Error::no_permissions().ok()?
         }
         for object in conditions.objects() {
             let obj_id = &object.object().id();
             schema.set_unpublished(obj_id, lot_id);
         }
-        schema.remove_member_lot(member_id, lot_id);
-        schema.remove_lot(lot_id);
+        // schema.remove_lot(lot_id);
+        schema.remove_member_lot(requestor_id, lot_id);
+        let new_state = state.set_status_closed();
+        schema.set_lot_state(lot_id, new_state);
+        schema.remove_lot_data(lot_id);
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
         Ok(())
     }
 }
@@ -1189,6 +1456,7 @@ impl Transaction for EditLotStatus {
     }
 
     fn execute(&self, fork: &mut Fork, _: &Hash, _: &PublicKey) -> ExecutionResult {
+        // let mut schema = Schema::new(fork);
         let mut schema = Schema::new(fork);
         let lot_id = self.lot_tx_hash();
         let state = schema
@@ -1197,13 +1465,78 @@ impl Transaction for EditLotStatus {
             .ok_or_else(|| Error::bad_state("lot state wasn't found"))?;
         let new_status = LotStatus::try_from(self.status())
             .map_err(|_| Error::bad_lot_status(&self.status().to_string()))?;
-        if new_status != LotStatus::Rejected && new_status != LotStatus::Verified {
-            Error::bad_state("lot status should be 'rejected' or 'verified'").ok()?
+
+        if !state.is_new() && !state.is_verified() {
+            Error::bad_state("lot status should be 'new' or 'verified'").ok()?;
         }
-        if !state.is_new() {
-            Error::bad_state("lot status should be new").ok()?
+
+        let new_state = match new_status {
+            LotStatus::Rejected => {
+                let conditions = schema
+                    .lot_conditions()
+                    .get(lot_id)
+                    .ok_or(Error::no_lot(lot_id))?;
+
+                for object in conditions.objects() {
+                    let obj_id = &object.object().id();
+                    schema.set_unpublished(obj_id, lot_id);
+                }
+
+                state.set_status_rejected()
+            }
+            LotStatus::Verified => state.set_status_verified(),
+            LotStatus::Closed => {
+                let conditions = schema
+                    .lot_conditions()
+                    .get(lot_id)
+                    .ok_or(Error::no_lot(lot_id))?;
+
+                for object in conditions.objects() {
+                    let obj_id = &object.object().id();
+                    schema.set_unpublished(obj_id, lot_id);
+                }
+
+                schema.remove_lot_data(lot_id);
+                state.set_status_closed()
+            }
+            _ => {
+                Error::bad_state("new lot status must be 'rejected', 'verified', 'closed'").ok()?
+            }
+        };
+
+        schema.set_lot_state(lot_id, new_state);
+        Ok(())
+    }
+}
+
+impl Transaction for LotUndefined {
+    fn verify(&self, _certificates: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn execute(&self, fork: &mut Fork, _hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let lot_id = self.lot_tx_hash();
+        let state = schema
+            .lot_states()
+            .get(lot_id)
+            .ok_or_else(|| Error::bad_state("lot state wasn't found"))?;
+
+        if state.is_closed() {
+            Error::lot_is_closed(lot_id).ok()?
+        } else if state.is_rejected() {
+            Error::lot_is_rejected(lot_id).ok()?
         }
-        let new_state = state.set_status(new_status);
+
+        if !state.undefined() {
+            Error::bad_state("lot status should be 'undefined'").ok()?
+        }
+
+        let new_state = match self.admit() {
+            true => state.set_undefined(false),
+            false => state.set_status_rejected(),
+        };
+
         schema.set_lot_state(lot_id, new_state);
         Ok(())
     }
@@ -1223,65 +1556,111 @@ impl Transaction for AcquireLot {
         let mut schema = Schema::new(fork);
         let lot_id = self.lot_tx_hash();
         let acquirer = self.requestor();
+        // TODO not best solution for determining the right holder.
         let lot_tx = match get_transaction(&schema, lot_id) {
             Ok(OwnershipTransactions::OpenLot(tx)) => tx,
             _ => Error::no_lot(lot_id).ok()?,
         };
         let rightholder = lot_tx.requestor();
 
-        // Check if lot was deleted
-        if !schema.member_lots(&rightholder.id()).contains(lot_id) {
+        if schema.member_lots(&acquirer.id()).contains(lot_id) {
             Error::no_permissions().ok()?
         }
-        let lot = lot_tx.lot();
-        let price = if lot.is_private_sale() {
-            lot.price()
-        } else if lot.is_auction() {
-            let state = schema
-                .lot_states()
-                .get(lot_id)
-                .ok_or_else(|| Error::bad_state("Lot's state wasn't found"))?;
-            if !state.is_executed() {
-                Error::bad_state("Lot hasn't been executed yet").ok()?;
-            }
-            let max_bid = state.price();
-            let mut requestor_is_the_highest_bidder = false;
-            for bid_tx_hash in schema.bid_history(lot_id).iter() {
-                let bid_tx = match get_private_tx(&schema, &bid_tx_hash)? {
-                    OwnershipTransactions::AddBid(tx) => tx,
-                    _ => unreachable!(),
+
+        let lot = schema
+            .lots()
+            .get(lot_id)
+            .ok_or_else(|| Error::no_lot(lot_id))?;
+
+        let state = schema
+            .lot_states()
+            .get(lot_id)
+            .ok_or_else(|| Error::bad_state("Lot's state wasn't found"))?;
+
+        if state.undefined() {
+            Error::lot_is_undefined(lot_id).ok()?;
+        }
+
+        let price = match SaleType::try_from(lot.sale_type())
+            .map_err(|_| Error::internal_bad_struct("sale_type"))?
+        {
+            SaleType::PrivateSale => {
+                if !state.is_verified() {
+                    Error::bad_state("Lot hasn't been verified yet").ok()?;
                 };
-                if bid_tx.requestor() == acquirer && bid_tx.bid().value() == max_bid {
-                    requestor_is_the_highest_bidder = true;
-                    break;
+                lot.price()
+            }
+            SaleType::Auction => {
+                if !state.is_executed() {
+                    Error::bad_state("Lot hasn't been executed yet").ok()?;
+                };
+
+                let max_bid = state.price();
+                let mut requestor_is_the_highest_bidder = false;
+                for bid_tx_hash in schema.bid_history(lot_id).iter() {
+                    let bid_tx = match get_private_tx(&schema, &bid_tx_hash)? {
+                        OwnershipTransactions::AddBid(tx) => tx,
+                        _ => unreachable!(),
+                    };
+                    if bid_tx.requestor() == acquirer && bid_tx.bid().value() == max_bid {
+                        requestor_is_the_highest_bidder = true;
+                        break;
+                    }
                 }
+                if !requestor_is_the_highest_bidder {
+                    Error::no_permissions().ok()?
+                }
+
+                //TODO нужно провести процедуру закрытия лота т.е. удалить лишние данные
+                let new_state = state.set_status_closed();
+                schema.set_lot_state(lot_id, new_state);
+
+                max_bid
             }
-            if !requestor_is_the_highest_bidder {
-                Error::no_permissions().ok()?
-            }
-            max_bid
-        } else {
-            unreachable!()
         };
 
-        let conditions = lot_tx.conditions();
+        let conditions = schema
+            .lot_conditions()
+            .get(lot_id)
+            .ok_or_else(|| Error::no_lot(lot_id))?;
 
-        schema.apply_checks(tx_hash, conditions.check());
         schema.set_check(tx_hash, conditions.check_buyer(&acquirer));
-        schema.set_check(tx_hash, conditions.check_seller(&rightholder));
-        schema.apply_checks(tx_hash, conditions.check_rights(&schema, &rightholder)?);
         schema.check_result(tx_hash)?;
 
+        for ownership in conditions.objects() {
+            schema.set_published_contract(&ownership.object().id(), tx_hash);
+        }
         let contract = Contract::buy(acquirer, rightholder, price, conditions);
         schema.add_contract(tx_hash, contract);
+
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
         Ok(())
     }
 }
 
 impl Transaction for PurchaseOffer {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        // TODO
-        true
+        self.buyer() != self.rightholder()
     }
 
     fn participants(&self) -> Vec<PublicKey> {
@@ -1290,62 +1669,54 @@ impl Transaction for PurchaseOffer {
 
     fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
-        let requestor = self.requestor();
+        let buyer = self.buyer();
         let rightholder = self.rightholder();
         let conditions = self.conditions();
 
+        let is_buyer = match self.requestor() {
+            member_id if member_id == buyer => true,
+            member_id if member_id == rightholder => false,
+            _ => Error::no_permissions().ok()?,
+        };
+
         schema.apply_checks(tx_hash, conditions.check());
-        schema.set_check(tx_hash, conditions.check_buyer(&requestor));
+        schema.set_check(tx_hash, conditions.check_buyer(&buyer));
         schema.set_check(tx_hash, conditions.check_seller(&rightholder));
         schema.apply_checks(tx_hash, conditions.check_rights(&schema, &rightholder)?);
         schema.check_result(tx_hash)?;
 
-        let price = self.price();
-        let contract = Contract::buy(requestor, rightholder, price, conditions);
+        for ownership in conditions.objects() {
+            schema.set_published_contract(&ownership.object().id(), tx_hash);
+        }
+
+        let contract = if is_buyer {
+            Contract::buy(buyer, rightholder, self.price(), conditions)
+        } else {
+            Contract::sell(buyer, rightholder, self.price(), conditions)
+        };
+
         schema.add_contract(tx_hash, contract);
         Ok(())
     }
-}
 
-impl Transaction for AddTaxInfo {
-    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        // TODO
-        true
-    }
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
 
-    fn participants(&self) -> Vec<PublicKey> {
-        self.share()
-    }
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
 
-    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
-        let mut schema = Schema::new(fork);
-        let contract_tx_hash = self.contract_tx_hash();
-        let contract = schema
-            .contracts()
-            .get(contract_tx_hash)
-            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
-        contract.check_can_add_tax()?;
-
-        let requestor = self.requestor();
-        let payment_number = self.number();
-        let payment_date = self.payment_date();
-        let amount = self.amount();
-
-        if !contract.is_member(&requestor) {
-            Error::no_permissions().ok()?
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
         }
-        if schema
-            .contract_payment()
-            .contains(&payment_number.to_owned())
-        {
-            Error::duplicate_payment().ok()?
-        }
-        schema.add_contract_tax(
-            contract_tx_hash,
-            Tax::new(requestor, payment_number, payment_date, amount),
-        );
 
-        schema.set_check(contract_tx_hash, CheckKey::TaxPaymentInfoAdded.ok());
         Ok(())
     }
 }
@@ -1371,33 +1742,12 @@ impl Transaction for DraftContract {
             .ok_or_else(|| Error::no_contract(contract_tx_hash))?
             .apply(Action::MakeDraft)?;
 
-        let deed_hash = schema
+        schema
             .contract_deed(contract_tx_hash)
             .ok_or(Error::deed_file_not_found(contract_tx_hash))?;
-        let application_hash = schema
+        schema
             .contract_application(contract_tx_hash)
             .ok_or(Error::application_file_not_found(contract_tx_hash))?;
-
-        if &deed_hash != self.deed_tx_hash() {
-            Err(Error::mismatched_deed_files())?;
-        };
-
-        if &application_hash != self.application_tx_hash() {
-            Err(Error::mismatched_application_files())?;
-        };
-
-        let stored_docs: HashSet<DocumentId> =
-            schema.contract_files(contract_tx_hash).keys().collect();
-        // input documents list must match stored one
-        if !self
-            .doc_tx_hashes()
-            .iter()
-            .cloned()
-            .collect::<HashSet<DocumentId>>()
-            .eq(&stored_docs)
-        {
-            Error::mismatched_doc_list().ok()?
-        }
 
         schema.set_check(contract_tx_hash, CheckKey::DocumentsMatchCondition.ok());
         schema.update_contract(contract_tx_hash, contract);
@@ -1418,13 +1768,39 @@ impl Transaction for RefuseContract {
     fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
 
+        let contract_tx_hash = self.contract_tx_hash();
+
         let contract = schema
             .contracts()
-            .get(self.contract_tx_hash())
+            .get(contract_tx_hash)
             .ok_or_else(|| Error::no_contract(self.contract_tx_hash()))?;
 
         let contract = contract.apply(Action::Refuse)?;
+        for ownership in contract.conditions().objects() {
+            schema.set_unpublished_contract(&ownership.object().id(), contract_tx_hash);
+        }
         schema.update_contract(self.contract_tx_hash(), contract);
+
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
 
         Ok(())
     }
@@ -1449,32 +1825,25 @@ impl Transaction for ConfirmContract {
             .get(contract_id)
             .ok_or_else(|| Error::no_contract(contract_id))?;
 
+        if contract.is_undefined() {
+            Error::contract_is_undefined(contract_id).ok()?;
+        }
+
         if &schema
             .contract_deed(contract_id)
             .ok_or(Error::deed_file_not_found(contract_id))?
-            != self.deed_tx_hash()
+            .tx_hash()
+            != &self.deed_tx_hash()
         {
             Error::mismatched_deed_files().ok()?;
         }
         if &schema
             .contract_application(contract_id)
             .ok_or(Error::application_file_not_found(contract_id))?
-            != self.application_tx_hash()
+            .tx_hash()
+            != &self.application_tx_hash()
         {
             Error::mismatched_application_files().ok()?;
-        }
-
-        // TODO: This should probably be moved into separate function
-        // passed documents list must match stored one
-        let stored_docs: HashSet<DocumentId> = schema.contract_files(contract_id).keys().collect();
-        if !self
-            .doc_tx_hashes()
-            .iter()
-            .cloned()
-            .collect::<HashSet<DocumentId>>()
-            .eq(&stored_docs)
-        {
-            Error::mismatched_doc_list().ok()?
         }
 
         // Rights may have changed and must be checked again
@@ -1488,11 +1857,105 @@ impl Transaction for ConfirmContract {
         // TODO lock objects if they're not locked (example PurchaseOffer)
         Ok(())
     }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
 }
 
-impl Transaction for AttachContractFile {
+impl Transaction for AttachContractOtherFile {
     fn verify(&self, _certificates: &HashMap<PublicKey, Certificate>) -> bool {
-        self.requestor().is_valid() && self.file().verify().is_ok()
+        self.requestor().is_valid()
+            && self.file().verify().is_ok()
+            && self.file().metadata().file_type() == AttachmentType::Other as u8
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let file = self.file();
+
+        let contract_tx_hash = self.contract_tx_hash();
+        // let data_hash = crypto::hash(file.data());
+        let contract = schema
+            .contracts()
+            .get(contract_tx_hash)
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+
+        if !contract.is_member(&self.requestor()) {
+            Err(Error::no_permissions())?
+        }
+
+        schema.set_check(
+            contract_tx_hash,
+            CheckKey::DocumentsMatchCondition.unknown(),
+        );
+
+        // schema.attach_file(&self.requestor().id(), tx_hash, data_hash);
+        let file_metadata = file.metadata();
+        match file_metadata.file_type().try_into()? {
+            AttachmentType::Other => {
+                let status = ContractStatus::try_from(contract.state())?;
+                match status {
+                    ContractStatus::New => {}
+                    ContractStatus::Draft(_) => {}
+                    ContractStatus::Confirmed(_) => {}
+                    ContractStatus::Signed => {}
+                    x => Error::bad_contract_state(x, "attaching file to contract").ok()?,
+                }
+                schema.attach_contract_file(contract_tx_hash, tx_hash, file_metadata)
+            }
+            _ => unreachable!(),
+        }
+        // schema.update_contract(contract_tx_hash, contract);
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
+}
+
+impl Transaction for AttachContractMainFile {
+    fn verify(&self, _certificates: &HashMap<PublicKey, Certificate>) -> bool {
+        self.file().verify().is_ok()
     }
 
     fn participants(&self) -> Vec<PublicKey> {
@@ -1503,28 +1966,51 @@ impl Transaction for AttachContractFile {
         let mut schema = Schema::new(fork);
         let file = self.file();
         let contract_tx_hash = self.contract_tx_hash();
-        let data_hash = crypto::hash(file.data());
+        // let data_hash = crypto::hash(file.data());
         let contract = schema
             .contracts()
             .get(contract_tx_hash)
             .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
-        contract.check_modifiable()?;
 
         schema.set_check(
             contract_tx_hash,
             CheckKey::DocumentsMatchCondition.unknown(),
         );
-        schema.update_contract(contract_tx_hash, contract);
 
-        schema.attach_file(&self.requestor().id(), tx_hash, data_hash);
-        match file.file_type().try_into()? {
-            AttachmentType::Deed => schema.attach_contract_deed(contract_tx_hash, *tx_hash),
-            AttachmentType::Application => {
-                schema.attach_contract_application(contract_tx_hash, *tx_hash)
+        // schema.attach_file(&self.requestor().id(), tx_hash, data_hash);
+        let file_metadata = file.metadata();
+        match file_metadata.file_type().try_into()? {
+            AttachmentType::Deed => {
+                if !contract.check_modifiable()? {
+                    let status = ContractStatus::try_from(contract.state())?;
+                    Error::bad_contract_state(status, "attaching deed file to contract").ok()?;
+                };
+                schema.attach_contract_deed(contract_tx_hash, tx_hash, file_metadata)
             }
-            AttachmentType::Other => schema.attach_contract_file(contract_tx_hash, tx_hash),
+            AttachmentType::Application => {
+                if !contract.check_modifiable()? {
+                    let status = ContractStatus::try_from(contract.state())?;
+                    Error::bad_contract_state(status, "attaching application file to contract")
+                        .ok()?;
+                };
+                schema.attach_contract_application(contract_tx_hash, tx_hash, file_metadata)
+            }
+            AttachmentType::Notification => {
+                // let status = ContractStatus::try_from(contract.state())?;
+                // match status {
+                //     ContractStatus::New => {}
+                //     ContractStatus::Draft(_) => {}
+                //     ContractStatus::Confirmed(_) => {}
+                //     ContractStatus::Signed => {}
+                //     x => Error::bad_contract_state(x, "attaching file to contract").ok()?,
+                // }
+                schema.attach_contract_notification(contract_tx_hash, tx_hash, file_metadata)
+            }
+            AttachmentType::Other => {
+                schema.attach_contract_file(contract_tx_hash, tx_hash, file_metadata)
+            }
         }
-
+        // schema.update_contract(contract_tx_hash, contract);
         Ok(())
     }
 }
@@ -1542,19 +2028,56 @@ impl Transaction for DeleteContractFiles {
     fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
         let contract_tx_hash = self.contract_tx_hash();
-        schema
+        let contract = schema
             .contracts()
             .get(contract_tx_hash)
-            .ok_or_else(|| Error::no_contract(contract_tx_hash))?
-            .check_modifiable()?;
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+
+        if !contract.is_member(&self.requestor()) {
+            Err(Error::no_permissions())?
+        }
+
+        let status = ContractStatus::try_from(contract.state())?;
+        match status {
+            ContractStatus::New => {}
+            ContractStatus::Draft(_) => {}
+            ContractStatus::Confirmed(_) => {}
+            ContractStatus::Signed => {}
+            x => Error::bad_contract_state(x, "deleting file from contract").ok()?,
+        }
+
+        for doc_id in self.doc_tx_hashes() {
+            if !schema.contract_files(contract_tx_hash).contains(doc_id) {
+                Err(Error::no_attachment(doc_id))?
+            }
+            schema.remove_contract_file(contract_tx_hash, doc_id);
+        }
 
         schema.set_check(
             contract_tx_hash,
             CheckKey::DocumentsMatchCondition.unknown(),
         );
+        schema.update_contract(contract_tx_hash, contract);
 
-        for doc_id in self.doc_tx_hashes() {
-            schema.remove_contract_file(contract_tx_hash, doc_id);
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
         }
 
         Ok(())
@@ -1563,14 +2086,17 @@ impl Transaction for DeleteContractFiles {
 
 impl Transaction for ApproveContract {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        self.signed_file().verify().is_ok()
+        self.attachment()
+            .map(|attach| attach.verify())
+            .transpose()
+            .is_ok()
     }
 
     fn participants(&self) -> Vec<PublicKey> {
         self.share()
     }
 
-    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
         let contract_tx_hash = self.contract_tx_hash();
         let contract = schema
@@ -1579,6 +2105,22 @@ impl Transaction for ApproveContract {
             .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
 
         let contract = contract.apply(Action::Approve)?;
+
+        self.attachment()
+            .map(|attach| {
+                attach.verify().map(|_| {
+                    schema.attach_contract_notification(
+                        contract_tx_hash,
+                        tx_hash,
+                        attach.metadata(),
+                    )
+                })
+            })
+            .transpose()?;
+
+        for ownership in contract.conditions().objects() {
+            schema.set_unpublished_contract(&ownership.object().id(), contract_tx_hash);
+        }
         schema.update_contract(contract_tx_hash, contract);
 
         Ok(())
@@ -1587,14 +2129,17 @@ impl Transaction for ApproveContract {
 
 impl Transaction for RejectContract {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        true
+        self.attachment()
+            .map(|attach| attach.verify())
+            .transpose()
+            .is_ok()
     }
 
     fn participants(&self) -> Vec<PublicKey> {
         self.share()
     }
 
-    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
         let contract_tx_hash = self.contract_tx_hash();
         let old_contract = schema
@@ -1603,11 +2148,22 @@ impl Transaction for RejectContract {
             .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
         let status = ContractStatus::try_from(old_contract.state())?;
         if status == ContractStatus::Registering || status == ContractStatus::AwaitingUserAction {
-            self.signed_file()
-                .ok_or(Error::empty_transaction_param("signed_file"))?
-                .verify()?;
+            self.attachment()
+                .map(|attach| {
+                    attach.verify().map(|_| {
+                        schema.attach_contract_notification(
+                            contract_tx_hash,
+                            tx_hash,
+                            attach.metadata(),
+                        )
+                    })
+                })
+                .transpose()?;
         };
         let new_contract = old_contract.apply(Action::Reject)?;
+        for ownership in new_contract.conditions().objects() {
+            schema.set_unpublished_contract(&ownership.object().id(), contract_tx_hash);
+        }
         schema.update_contract(contract_tx_hash, new_contract);
         Ok(())
     }
@@ -1655,6 +2211,32 @@ impl Transaction for UpdateContract {
         let contract = old_contract.apply(Action::Update { price, conditions })?;
         schema.update_contract(contract_tx_hash, contract);
         schema.clear_contract_files(contract_tx_hash);
+        schema.add_contracts_contacts_mut(
+            contract_tx_hash,
+            self.contract_correspondence(),
+            self.objects_correspondence(),
+        );
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
         Ok(())
     }
 }
@@ -1697,11 +2279,32 @@ impl Transaction for AddBid {
         schema.put_bid_tx(lot_id, tx_hash.clone());
         Ok(())
     }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
 }
 
 impl Transaction for PublishBids {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
-        true
+        !self.bids().is_empty()
     }
 
     fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
@@ -1723,7 +2326,7 @@ impl Transaction for PublishBids {
             .get(lot_id)
             .ok_or(Error::bad_state("lot state wasn't found"))?;
         if !state.is_verified() {
-            Error::bad_state("lot hasn't been verified").ok()?
+            Error::lot_is_not_verified(lot_id).ok()?
         }
 
         /* TODO should be checked only in block precommit
@@ -1811,14 +2414,36 @@ impl Transaction for ExtendLotPeriod {
         let lot = Lot::new(
             lot.name(),
             lot.desc(),
+            requestor,
             lot.price(),
             lot.sale_type(),
             lot.opening_time(),
             self.new_expiration_date(),
         );
 
-        schema.remove_lot(lot_id);
-        schema.add_lot(lot_id, lot, conditions);
+        // schema.remove_lot(lot_id);
+        schema.update_lot(*lot_id, lot, conditions);
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
         Ok(())
     }
 }
@@ -1846,10 +2471,15 @@ impl Transaction for ExecuteLot {
             .lot_states()
             .get(lot_id)
             .ok_or(Error::bad_state("lot state wasn't found"))?;
+
         /*if !state.is_completed() {
             Error::bad_state("lot bids haven't been published yet").ok()?
         }*/
-        let newstate = state.set_status(LotStatus::Executed);
+        if !state.is_verified() {
+            Error::lot_is_not_verified(lot_id).ok()?
+        }
+
+        let newstate = state.set_status_executed();
         schema.set_lot_state(lot_id, newstate);
         Ok(())
     }
@@ -1908,52 +2538,99 @@ impl Transaction for SignContract {
         self.share()
     }
 
-    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+    fn execute(&self, fork: &mut Fork, tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
         let contract_tx_hash = self.contract_tx_hash();
+        let requestor = self.requestor();
         let old_contract = schema
             .contracts()
             .get(contract_tx_hash)
             .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
 
-        let new_contract = old_contract.apply(Action::Sign(self.requestor()))?;
+        if old_contract.is_undefined() {
+            Error::contract_is_undefined(contract_tx_hash).ok()?;
+        }
 
-        // let deed_hash = &schema
-        //     .contract_deed(contract_tx_hash)
-        //     .ok_or(Error::deed_file_not_found(contract_tx_hash))?;
-        // let deed_attachment: Attachment = {
-        //     let doc_tx = get_private_tx(&schema, deed_hash)?;
-        //     match doc_tx {
-        //         OwnershipTransactions::AttachContractFile(tx) => Ok(tx.file()),
-        //         _ => Error::unexpected_tx_type(deed_hash).ok(),
-        //     }
-        // }?;
-        // let deed_data = deed_attachment.data();
-        // let deed_sign = self.deed_sign();
-        // member_matches_sign(&self.requestor(), &deed_sign)?;
-        // deed_sign.verify_data(deed_data)?;
-        //
-        // let application_hash = &schema
-        //     .contract_deed(contract_tx_hash)
-        //     .ok_or(Error::deed_file_not_found(contract_tx_hash))?;
-        // let application_attachment: Attachment = {
-        //     let doc_tx = get_private_tx(&schema, application_hash)?;
-        //     match doc_tx {
-        //         OwnershipTransactions::AttachContractFile(tx) => Ok(tx.file()),
-        //         _ => Error::unexpected_tx_type(application_hash).ok(),
-        //     }
-        // }?;
-        // let application_data = application_attachment.data();
-        // let application_sign = self.application_sign();
-        // member_matches_sign(&self.requestor(), &application_sign)?;
-        // application_sign.verify_data(application_data)?;
+        let new_contract = old_contract.apply(Action::Sign(requestor.clone()))?;
+
+        let deed_file = schema
+            .contract_deed(contract_tx_hash)
+            .ok_or(Error::deed_file_not_found(contract_tx_hash))?;
+        let deed_attachment: Attachment = schema.get_attachment(deed_file.tx_hash())?;
+        let deed_data = deed_attachment.data();
+        let deed_sign = self.deed_sign();
+        member_matches_sign(&requestor, &deed_sign)?;
+        deed_sign.verify_data(deed_data)?;
+
+        let application_file = schema
+            .contract_application(contract_tx_hash)
+            .ok_or(Error::deed_file_not_found(contract_tx_hash))?;
+        let application_attachment = schema.get_attachment(application_file.tx_hash())?;
+        let application_data = application_attachment.data();
+        let application_sign = self.application_sign();
+        member_matches_sign(&requestor, &application_sign)?;
+        application_sign.verify_data(application_data)?;
+
+        // The row `let new_contract = old_contract.apply(Action::Sign(self.requestor()))?;` guarantee that requestor buyer or seller.
+        match requestor {
+            buyer if new_contract.is_buyer(&buyer) => {
+                schema.add_sign_contract_tx(
+                    deed_file.tx_hash(),
+                    buyer.clone(),
+                    BuyerSeller::Buyer,
+                    tx_hash,
+                );
+                schema.add_sign_contract_tx(
+                    application_file.tx_hash(),
+                    buyer,
+                    BuyerSeller::Buyer,
+                    tx_hash,
+                );
+            }
+            seller if new_contract.is_seller(&seller) => {
+                schema.add_sign_contract_tx(
+                    deed_file.tx_hash(),
+                    seller.clone(),
+                    BuyerSeller::Seller,
+                    tx_hash,
+                );
+                schema.add_sign_contract_tx(
+                    application_file.tx_hash(),
+                    seller,
+                    BuyerSeller::Seller,
+                    tx_hash,
+                );
+            }
+            _ => Error::no_permissions().ok()?,
+        }
 
         schema.update_contract(contract_tx_hash, new_contract);
         Ok(())
     }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
 }
 
-impl Transaction for SubmitChecks {
+impl Transaction for ContractSubmitChecks {
     fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
         true
     }
@@ -1965,12 +2642,124 @@ impl Transaction for SubmitChecks {
     fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
         let mut schema = Schema::new(fork);
         let contract_tx_hash = self.contract_tx_hash();
-        if !schema.contracts().contains(contract_tx_hash) {
-            Err(Error::no_contract(contract_tx_hash))?;
-        };
-        for check in self.checks() {
-            schema.set_check(contract_tx_hash, check);
+        let mut contract = schema
+            .contracts()
+            .get(contract_tx_hash)
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+        let status = ContractStatus::try_from(contract.state())?;
+        match self.is_undef() {
+            true => {
+                if !contract.is_undefined() {
+                    Error::bad_state("contract should be 'undefined'").ok()?;
+                };
+                contract = contract.set_undefined(false);
+                match status {
+                    ContractStatus::Draft(_) | ContractStatus::Confirmed(_) => {
+                        if self.checks().iter().any(|v| v.result().is_error()) {
+                            contract = contract.apply(Action::MakeDraft)?;
+                        }
+                    }
+                    ContractStatus::Signed => {
+                        if self.checks().iter().any(|v| v.result().is_error()) {
+                            contract = contract.apply(Action::Reject)?;
+                            for ownership in contract.conditions().objects() {
+                                schema.set_unpublished_contract(
+                                    &ownership.object().id(),
+                                    contract_tx_hash,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false => match status {
+                ContractStatus::New => {
+                    schema
+                        .contract_deed(contract_tx_hash)
+                        .ok_or(Error::deed_file_not_found(contract_tx_hash))?;
+                    schema
+                        .contract_application(contract_tx_hash)
+                        .ok_or(Error::application_file_not_found(contract_tx_hash))?;
+
+                    contract = contract.apply(Action::MakeDraft)?;
+                }
+
+                _ => {}
+            },
         }
+        if let Some(ref_numb) = self.reference_number() {
+            schema.contract_add_reference_number(contract_tx_hash, ref_numb);
+        }
+
+        schema.update_contract(contract_tx_hash, contract);
+        schema.apply_checks(contract_tx_hash, self.checks());
+        Ok(())
+    }
+}
+
+impl Transaction for LotSubmitChecks {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let lot_tx_hash = self.lot_tx_hash();
+        let state = schema
+            .lot_states()
+            .get(lot_tx_hash)
+            .ok_or_else(|| Error::no_lot(lot_tx_hash))?;
+
+        match self.is_undef() {
+            true => {
+                if !state.undefined() {
+                    Error::bad_state("lot status should be 'undefined'").ok()?
+                }
+                let mut new_state = state.set_undefined(false);
+
+                if (new_state.is_new() || new_state.is_verified())
+                    && self.checks().iter().any(|v| v.result().is_error())
+                {
+                    let conditions = schema
+                        .lot_conditions()
+                        .get(lot_tx_hash)
+                        .ok_or_else(|| Error::no_lot(lot_tx_hash))?;
+
+                    for object in conditions.objects() {
+                        let obj_id = &object.object().id();
+                        schema.set_unpublished(obj_id, lot_tx_hash);
+                    }
+                    new_state = new_state.set_status_rejected();
+                };
+                schema.set_lot_state(lot_tx_hash, new_state);
+            }
+            false => {
+                if state.is_new() {
+                    let new_state = if self.checks().iter().any(|v| v.result().is_error()) {
+                        let conditions = schema
+                            .lot_conditions()
+                            .get(lot_tx_hash)
+                            .ok_or_else(|| Error::no_lot(lot_tx_hash))?;
+
+                        for object in conditions.objects() {
+                            let obj_id = &object.object().id();
+                            schema.set_unpublished(obj_id, lot_tx_hash);
+                        }
+                        state.set_status_rejected()
+                    } else {
+                        state.set_status_verified()
+                    };
+                    schema.set_lot_state(lot_tx_hash, new_state);
+                }
+            }
+        }
+
+        if let Some(ref_numb) = self.reference_number() {
+            schema.lot_add_reference_number(lot_tx_hash, ref_numb);
+        }
+
+        schema.apply_checks(lot_tx_hash, self.checks());
         Ok(())
     }
 }
@@ -1990,7 +2779,383 @@ impl Transaction for ContractReferenceNumber {
         if !schema.contracts().contains(contract_tx_hash) {
             Err(Error::no_contract(contract_tx_hash))?;
         };
-        schema.set_contract_reference_number(contract_tx_hash, self.reference_number().to_string());
+
+        schema.contract_add_reference_number(contract_tx_hash, self.reference_number().to_string());
+        Ok(())
+    }
+}
+
+impl Transaction for TaxRequest {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let schema = Schema::new(fork);
+        let contract_tx_hash = self.contract_tx_hash();
+        let contract = schema
+            .contracts()
+            .get(contract_tx_hash)
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+        if !contract.is_signed()? {
+            let status = ContractStatus::try_from(contract.state())?;
+            Error::bad_contract_state(status, "TaxRequest").ok()?;
+        }
+
+        let requestor = self.requestor();
+
+        if !contract.is_member(&requestor) {
+            Error::no_permissions().ok()?
+        }
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
+}
+
+impl Transaction for TaxContractCalculation {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let contract_tx_hash = self.contract_tx_hash();
+        let contract = schema
+            .contracts()
+            .get(contract_tx_hash)
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+
+        if !contract.check_modifiable()? {
+            let status = ContractStatus::try_from(contract.state())?;
+            Error::bad_contract_state(status, "adding calculation").ok()?;
+        };
+        //TODO Желательно сделать проверку на количество расчетов, должен быть 1 или 2 в зависимости от списка ОИС
+
+        if let Some(ref_numb) = self.reference_number() {
+            schema.contract_add_reference_number(contract_tx_hash, ref_numb);
+        }
+
+        schema.add_contract_calculations(contract_tx_hash, self.calculations());
+        Ok(())
+    }
+}
+
+impl Transaction for TaxLotCalculation {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let lot_tx_hash = self.lot_tx_hash();
+        let calculations = self.calculations();
+        let state = schema
+            .lot_states()
+            .get(lot_tx_hash)
+            .ok_or_else(|| Error::no_lot(lot_tx_hash))?;
+
+        //TODO Желательно сделать проверку на количество расчетов, должен быть 1 или 2 в зависимости от списка ОИС
+
+        if state.is_new() || state.is_rejected() {
+            Error::bad_state("lot status should be 'verified' before adding calculation").ok()?
+        }
+
+        if let Some(ref_numb) = self.reference_number() {
+            schema.lot_add_reference_number(lot_tx_hash, ref_numb);
+        }
+
+        schema.add_lot_calculations(lot_tx_hash, calculations);
+        Ok(())
+    }
+}
+
+impl Transaction for TaxWithPaymentDetails {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let contract_tx_hash = self.contract_tx_hash();
+        let contract = schema
+            .contracts()
+            .get(contract_tx_hash)
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+
+        if !contract.is_signed()? {
+            let status = ContractStatus::try_from(contract.state())?;
+            Error::bad_contract_state(status, "TaxWithPaymentDetails").ok()?;
+        }
+
+        //TODO Желательно сделать проверку на количество расчетов, должен быть 1 или 2 в зависимости от списка ОИС
+
+        let mut payment_details =
+            PaymentDetailsWrapper::from(schema.get_contract_payment_details(contract_tx_hash))
+                .get_all_paid();
+        payment_details.extend(self.payment_details());
+        schema.add_contract_payment_details(contract_tx_hash, payment_details);
+
+        if contract.is_signed()? {
+            let new_contract = contract.apply(Action::ReadyForRegistering)?;
+            schema.update_contract(contract_tx_hash, new_contract);
+        }
+
+        Ok(())
+    }
+}
+
+impl Transaction for TaxStatus {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let contract_tx_hash = self.contract_tx_hash();
+        let contract = schema
+            .contracts()
+            .get(contract_tx_hash)
+            .ok_or_else(|| Error::no_contract(contract_tx_hash))?;
+
+        if !contract.is_signed()? {
+            let status = ContractStatus::try_from(contract.state())?;
+            Error::bad_contract_state(status, "TaxWithPaymentDetails").ok()?;
+        }
+
+        //TODO Желательно сделать проверку на количество расчетов, должен быть 1 или 2 в зависимости от списка ОИС
+
+        schema.change_contract_payment_status(
+            contract_tx_hash,
+            self.payment_id(),
+            self.status().try_into()?,
+        )?;
+        Ok(())
+    }
+}
+
+impl Transaction for ContractUndefined {
+    fn verify(&self, _certificates: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn execute(&self, fork: &mut Fork, _hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        let contract_id = self.contract_tx_hash();
+        let contract = schema
+            .contracts()
+            .get(contract_id)
+            .ok_or_else(|| Error::no_contract(contract_id))?;
+
+        if contract.is_finished()? {
+            Error::bad_state("The contract has already been completed").ok()?
+        };
+
+        let new_contract = match self.admit() {
+            true => contract.set_undefined(false),
+            false => {
+                for ownership in contract.conditions().objects() {
+                    schema.set_unpublished_contract(&ownership.object().id(), contract_id);
+                }
+                contract.apply(Action::Reject)?
+            }
+        };
+
+        schema.update_contract(contract_id, new_contract);
+        Ok(())
+    }
+}
+
+impl Transaction for MemberToken {
+    fn verify(&self, _certificates: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn execute(&self, fork: &mut Fork, _hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+        schema.put_member_token(
+            &self.member(),
+            self.token().to_owned(),
+            self.oid().to_owned(),
+        );
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        _snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let member = self.member();
+
+        let is_success = EsiaAuth::validate(&member, self.token(), self.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
+}
+
+impl Transaction for ContractConfirmCreate {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+
+        let contract = schema
+            .contracts()
+            .get(self.contract_tx_hash())
+            .ok_or_else(|| Error::no_contract(self.contract_tx_hash()))?;
+
+        let requestor_id = &self.requestor();
+
+        if !contract.is_member(requestor_id) {
+            Error::no_permissions().ok()?
+        };
+
+        let contract = contract.apply(Action::Confirm(requestor_id.to_owned()))?;
+        schema.update_contract(self.contract_tx_hash(), contract);
+
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.requestor();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
+}
+
+impl Transaction for ContractUnconfirmCreate {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+
+        let contract = schema
+            .contracts()
+            .get(self.contract_tx_hash())
+            .ok_or_else(|| Error::no_contract(self.contract_tx_hash()))?;
+
+        let member_id = &self.member();
+
+        if !contract.is_member(member_id) {
+            Error::no_permissions().ok()?
+        };
+
+        let contract = contract.apply(Action::Unconfirm(self.member()))?;
+        schema.update_contract(self.contract_tx_hash(), contract);
+
+        Ok(())
+    }
+
+    fn pre_execute(
+        &self,
+        snapshot: &dyn Snapshot,
+        _hash: &Hash,
+        _executor: &PublicKey,
+    ) -> PreExecutionResult {
+        let schema = Schema::new(snapshot);
+        let member = self.member();
+        let token = schema
+            .member_token(&member)
+            .ok_or_else(|| Error::no_member_token())?;
+
+        let is_success = EsiaAuth::validate(&member, token.token(), token.oid())?;
+
+        if !is_success {
+            Error::esia_invalid_member(&member).ok()?
+        }
+
+        Ok(())
+    }
+}
+
+impl Transaction for ContractNew {
+    fn verify(&self, _certs: &HashMap<PublicKey, Certificate>) -> bool {
+        true
+    }
+
+    fn participants(&self) -> Vec<PublicKey> {
+        self.share()
+    }
+
+    fn execute(&self, fork: &mut Fork, _tx_hash: &Hash, _executor: &PublicKey) -> ExecutionResult {
+        let mut schema = Schema::new(fork);
+
+        let contract = schema
+            .contracts()
+            .get(self.contract_tx_hash())
+            .ok_or_else(|| Error::no_contract(self.contract_tx_hash()))?;
+
+        let contract = contract.apply(Action::New)?;
+        schema.update_contract(self.contract_tx_hash(), contract);
+
         Ok(())
     }
 }

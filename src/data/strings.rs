@@ -17,3 +17,10 @@ pub fn verify_filename(name: &str) -> Result<(), Error> {
         Ok(())
     }
 }
+
+pub fn verify_str(data: &str, parameter_name: &str) -> Result<(), Error> {
+    if data.len() > 256 {
+        Error::too_long_param(parameter_name).ok()?;
+    }
+    Ok(())
+}

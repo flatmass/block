@@ -2,6 +2,7 @@ use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 

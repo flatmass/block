@@ -1,8 +1,8 @@
-use blockp_core::helpers::{self, fabric::NodeBuilder};
 use blockp_configuration as configuration;
+use blockp_core::helpers::fabric::NodeBuilder;
 
 fn main() {
-    helpers::init_logger().unwrap();
+    let _logger_guard = log_custom::init_logger().unwrap();
 
     let node = NodeBuilder::new()
         .with_service(Box::new(configuration::ServiceFactory))

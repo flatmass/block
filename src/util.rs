@@ -1,6 +1,10 @@
-use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::str::FromStr;
+
+use chrono::Utc;
+
+use crate::data::attachment::{Attachment, AttachmentMetadata, AttachmentType};
+use crate::error::{Error, Result};
 
 #[allow(unused)]
 pub fn utf8_str_param<'a>(name: &'_ str, params: &'a HashMap<String, Vec<u8>>) -> Result<&'a str> {
@@ -34,6 +38,57 @@ where
         .map_err(Into::into)
 }
 
+pub fn get_from_map_nullable<T, E>(
+    map: &HashMap<String, impl AsRef<[u8]>>,
+    name: &str,
+) -> Result<Option<T>>
+where
+    E: Into<Error>,
+    T: FromStr<Err = E>,
+{
+    let value = match map.get(name) {
+        None => None,
+        Some(v) => {
+            if v.as_ref().is_empty() {
+                Err(Error::empty_param(name))?
+            } else {
+                let str = std::str::from_utf8(v.as_ref())?;
+                Some(str.parse::<T>().map_err(Into::into)?)
+            }
+        }
+    };
+    Ok(value)
+}
+
+#[cfg(feature = "internal_api")]
+pub fn get_from_map_nullable_str<'a>(
+    map: &'a HashMap<String, impl AsRef<[u8]>>,
+    name: &str,
+) -> Result<Option<&'a str>> {
+    let value = map
+        .get(name)
+        .map(|v| std::str::from_utf8(v.as_ref()))
+        .transpose()?;
+    Ok(value)
+}
+
+#[cfg(feature = "internal_api")]
+pub fn get_from_map_nullable_slice<'a>(
+    map: &'a HashMap<String, impl AsRef<[u8]>>,
+    name: &str,
+) -> Option<&'a [u8]> {
+    map.get(name).map(|v| v.as_ref())
+}
+
+#[cfg(feature = "internal_api")]
+pub fn get_from_map_nullable_string(
+    map: &HashMap<String, impl AsRef<[u8]>>,
+    name: &str,
+) -> Option<String> {
+    map.get(name)
+        .map(|v| String::from_utf8_lossy(v.as_ref()).into_owned())
+}
+
 pub fn get_from_multipart_map<T>(map: &HashMap<String, impl AsRef<[u8]>>, name: &str) -> Result<T>
 where
     T: FromStr<Err = Error>,
@@ -58,6 +113,50 @@ pub fn get_str_from_map<'a>(
         })
 }
 
+#[cfg(feature = "internal_api")]
+pub fn get_string_from_map(map: &HashMap<String, impl AsRef<[u8]>>, name: &str) -> Result<String> {
+    get_slice_from_map(map, name)
+        .map(|bytes: &[u8]| String::from_utf8_lossy(bytes))
+        .and_then(|s| {
+            if s.is_empty() {
+                Err(Error::empty_param(name))
+            } else {
+                Ok(s.to_string())
+            }
+        })
+}
+
+pub fn get_attachment_from_map(map: &HashMap<String, impl AsRef<[u8]>>) -> Result<Attachment> {
+    let name = get_str_from_map(map, "name")?;
+    let description = get_from_map_nullable(map, "description")?;
+    let file_type: AttachmentType = get_from_multipart_map(map, "file_type")?;
+    let file = get_slice_from_map(map, "file")?;
+    let sign = get_from_map_nullable(map, "sign")?;
+    let meta = AttachmentMetadata::new(name, description, file_type as u8, Utc::now());
+    Ok(Attachment::new(meta, file, sign))
+}
+
+#[cfg(feature = "internal_api")]
+pub fn get_attachment_nullable_from_map(
+    map: &HashMap<String, impl AsRef<[u8]>>,
+) -> Result<Option<Attachment>> {
+    let name = get_from_map_nullable_str(map, "name")?;
+    let description = get_from_map_nullable_string(map, "description");
+    let file_type: Option<AttachmentType> = get_from_map_nullable(map, "file_type")?;
+    let file = get_from_map_nullable_slice(map, "file");
+    let sign = get_from_map_nullable(map, "sign")?;
+    match (name, file_type, file, sign) {
+        (None, None, None, None) => Ok(None),
+        (name, file_tpye, file, sign) => {
+            let name = name.ok_or_else(|| Error::empty_param("name"))?;
+            let file_type = file_tpye.ok_or_else(|| Error::empty_param("file_tpye"))?;
+            let file = file.ok_or_else(|| Error::empty_param("file"))?;
+            let meta = AttachmentMetadata::new(name, description, file_type as u8, Utc::now());
+            Ok(Some(Attachment::new(meta, file, sign)))
+        }
+    }
+}
+
 pub fn get_slice_from_map<'a>(
     map: &'a HashMap<String, impl AsRef<[u8]>>,
     name: &str,
@@ -76,6 +175,7 @@ pub fn get_slice_from_map<'a>(
 
 // remove duplicates from Vector.
 // O(N^2) performance; O(N) memory
+#[allow(unused)]
 pub fn dedup_naive<T>(vec: Vec<T>) -> Vec<T>
 where
     T: Eq + Clone,

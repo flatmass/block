@@ -8,6 +8,6 @@ pub mod lot;
 pub mod member;
 pub mod object;
 pub mod ownership;
-pub mod request;
+pub mod payment;
 pub mod strings;
 pub mod time;
